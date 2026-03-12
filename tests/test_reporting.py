@@ -77,6 +77,52 @@ def test_stats_summary_shape():
     assert "Annualised Volatility" in summary.columns
 
 
+def test_stats_summary_labels_in_sample():
+    """Index labels should contain '(In-Sample)' when no eval_returns is given."""
+    prices = _make_returns()
+    ret = compute_returns(prices)
+    cov = compute_covariance(ret)
+    w = np.full(4, 0.25)
+    summary = stats_summary(w, w, ret, cov)
+    assert all("In-Sample" in idx for idx in summary.index)
+
+
+def test_stats_summary_labels_oos():
+    """Index labels should contain '(OOS)' when eval_returns is provided."""
+    from portfolio_rebalance.risk import split_returns
+
+    prices = _make_returns(n_days=500)
+    ret = compute_returns(prices)
+    est, oos = split_returns(ret, eval_frac=0.2)
+    cov = compute_covariance(est)
+    w = np.full(4, 0.25)
+    summary = stats_summary(w, w, est, cov, eval_returns=oos)
+    assert all("OOS" in idx for idx in summary.index)
+
+
+def test_stats_summary_oos_uses_held_out_period():
+    """OOS stats must use data from the held-out period, not the estimation period."""
+    from portfolio_rebalance.risk import split_returns
+
+    prices = _make_returns(n_days=600)
+    ret = compute_returns(prices)
+    est, oos = split_returns(ret, eval_frac=0.25)
+    cov = compute_covariance(est)
+    w = np.full(4, 0.25)
+    is_summary = stats_summary(w, w, est, cov)
+    oos_summary = stats_summary(w, w, est, cov, eval_returns=oos)
+    # The volatility figures will generally differ between windows (different raw data)
+    is_vol = is_summary["Annualised Volatility"].iloc[0]
+    oos_vol = oos_summary["Annualised Volatility"].iloc[0]
+    # Simply check they are valid percentage strings (format "X.XX%")
+    assert is_vol.endswith("%")
+    assert oos_vol.endswith("%")
+    # The return stat values should also differ between windows
+    is_ret = is_summary["Annualised Return"].iloc[0]
+    oos_ret = oos_summary["Annualised Return"].iloc[0]
+    assert is_ret != oos_ret, "OOS return should use different data from in-sample return"
+
+
 # ---------------------------------------------------------------------------
 # Plotly figures (just ensure they are created without error)
 # ---------------------------------------------------------------------------
@@ -107,3 +153,18 @@ def test_fig_cumulative_returns():
     w = np.full(n, 0.25)
     fig = fig_cumulative_returns(ret, w, w)
     assert fig is not None
+
+
+def test_fig_cumulative_returns_oos():
+    """OOS variant should produce a figure with 4 traces and a vertical line."""
+    from portfolio_rebalance.risk import split_returns
+
+    prices = _make_returns(n_days=500, n_assets=4)
+    ret = compute_returns(prices)
+    est, oos = split_returns(ret, eval_frac=0.2)
+    w = np.full(4, 0.25)
+    fig = fig_cumulative_returns(est, w, w, eval_returns=oos)
+    assert fig is not None
+    # Should have 4 scatter traces (2 in-sample + 2 OOS)
+    scatter_traces = [t for t in fig.data if t.type == "scatter"]
+    assert len(scatter_traces) == 4

@@ -11,7 +11,9 @@ from portfolio_rebalance.risk import (
     compute_covariance,
     portfolio_volatility,
     portfolio_stats,
+    portfolio_stats_realized,
     compute_correlation,
+    split_returns,
     TRADING_DAYS,
 )
 
@@ -154,3 +156,73 @@ def test_compute_correlation_range():
     corr = compute_correlation(ret)
     assert corr.values.min() >= -1.0 - 1e-12
     assert corr.values.max() <= 1.0 + 1e-12
+
+
+# ---------------------------------------------------------------------------
+# split_returns
+# ---------------------------------------------------------------------------
+
+
+def test_split_returns_no_overlap():
+    prices = _random_prices(n_days=500)
+    ret = compute_returns(prices)
+    est, oos = split_returns(ret, eval_frac=0.2)
+    # The two windows must not overlap
+    assert est.index[-1] < oos.index[0]
+
+
+def test_split_returns_size():
+    prices = _random_prices(n_days=500)
+    ret = compute_returns(prices)
+    n = len(ret)
+    est, oos = split_returns(ret, eval_frac=0.2)
+    # All rows accounted for
+    assert len(est) + len(oos) == n
+    # OOS size is within 1 row of the requested fraction (integer truncation may vary by 1)
+    assert abs(len(oos) - round(n * 0.2)) <= 1
+
+
+def test_split_returns_columns_preserved():
+    prices = _random_prices(n_assets=5)
+    ret = compute_returns(prices)
+    est, oos = split_returns(ret, eval_frac=0.3)
+    assert list(est.columns) == list(ret.columns)
+    assert list(oos.columns) == list(ret.columns)
+
+
+def test_split_returns_invalid_frac():
+    prices = _random_prices()
+    ret = compute_returns(prices)
+    with pytest.raises(ValueError):
+        split_returns(ret, eval_frac=0.0)
+    with pytest.raises(ValueError):
+        split_returns(ret, eval_frac=1.0)
+
+
+# ---------------------------------------------------------------------------
+# portfolio_stats_realized
+# ---------------------------------------------------------------------------
+
+
+def test_portfolio_stats_realized_keys():
+    prices = _random_prices()
+    ret = compute_returns(prices)
+    w = np.full(4, 0.25)
+    stats = portfolio_stats_realized(w, ret)
+    assert set(stats.keys()) == {"volatility", "mean_return", "sharpe", "max_drawdown"}
+
+
+def test_portfolio_stats_realized_vol_positive():
+    prices = _random_prices()
+    ret = compute_returns(prices)
+    w = np.full(4, 0.25)
+    stats = portfolio_stats_realized(w, ret)
+    assert stats["volatility"] > 0
+
+
+def test_portfolio_stats_realized_max_drawdown_non_positive():
+    prices = _random_prices()
+    ret = compute_returns(prices)
+    w = np.full(4, 0.25)
+    stats = portfolio_stats_realized(w, ret)
+    assert stats["max_drawdown"] <= 0

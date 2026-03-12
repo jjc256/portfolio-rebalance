@@ -28,6 +28,7 @@ from portfolio_rebalance.risk import (
     compute_returns,
     compute_covariance,
     portfolio_volatility,
+    split_returns,
 )
 from portfolio_rebalance.optimizer import rebalance
 from portfolio_rebalance.reporting import (
@@ -131,6 +132,29 @@ with st.sidebar:
             format="%.0%%",
         )
 
+    st.divider()
+    st.header("Evaluation")
+    use_oos = st.checkbox(
+        "Out-of-sample evaluation",
+        value=False,
+        help=(
+            "Split the historical data into an estimation window (used to fit the "
+            "covariance and optimiser) and a held-out evaluation window (used only "
+            "to report performance). Disabling this shows in-sample stats, which "
+            "are biased because the proposed weights were optimised on the same data."
+        ),
+    )
+    eval_frac: float | None = None
+    if use_oos:
+        eval_frac = st.slider(
+            "Evaluation window (% of data held out)",
+            min_value=0.10,
+            max_value=0.40,
+            value=0.20,
+            step=0.05,
+            format="%.0%%",
+        )
+
     run = st.button("🚀 Run Optimisation", type="primary", width='stretch')
 
 # ---------------------------------------------------------------------------
@@ -156,7 +180,15 @@ if run and portfolio_df is not None:
         st.stop()
 
     returns = compute_returns(prices)
-    cov = compute_covariance(returns, annualise=True)
+
+    # Split into estimation and (optional) evaluation windows
+    eval_returns: pd.DataFrame | None = None
+    if use_oos and eval_frac is not None:
+        est_returns, eval_returns = split_returns(returns, eval_frac=eval_frac)
+    else:
+        est_returns = returns
+
+    cov = compute_covariance(est_returns, annualise=True)
 
     # Align portfolio to available tickers
     portfolio_filtered = portfolio_filtered[
@@ -175,25 +207,38 @@ if run and portfolio_df is not None:
     current_vol = portfolio_volatility(current_w, cov)
     proposed_vol = portfolio_volatility(proposed_w, cov)
 
+    # ---- OOS / in-sample notice ----
+    if use_oos and eval_returns is not None:
+        n_est = len(est_returns)
+        n_oos = len(eval_returns)
+        st.info(
+            f"📊 **Out-of-sample mode**: covariance estimated on {n_est} days, "
+            f"performance stats evaluated on the held-out {n_oos}-day OOS window."
+        )
+    else:
+        st.caption(
+            "⚠️ Performance stats below are **in-sample** — computed on the same "
+            "historical data used to fit the covariance matrix and run the optimiser. "
+            "Enable *Out-of-sample evaluation* in the sidebar for a bias-free comparison."
+        )
+
     # ---- KPI row ----
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Current Volatility", f"{current_vol:.2%}")
+        st.metric("Current Volatility (in-sample)", f"{current_vol:.2%}")
     with col2:
         st.metric(
-            "Proposed Volatility",
+            "Proposed Volatility (in-sample)",
             f"{proposed_vol:.2%}",
             delta=f"{proposed_vol - current_vol:.2%}",
             delta_color="inverse",
         )
     with col3:
         vol_reduction = (current_vol - proposed_vol) / current_vol * 100
-        st.metric("Volatility Reduction", f"{vol_reduction:.1f}%")
+        st.metric("Volatility Reduction (in-sample)", f"{vol_reduction:.1f}%")
     with col4:
         turnover = float(np.sum(np.abs(proposed_w - current_w)))
         st.metric("One-way Turnover", f"{turnover:.2%}")
-
-    st.divider()
 
     # ---- Weights comparison ----
     st.subheader("Weights: Current vs Proposed")
@@ -207,14 +252,17 @@ if run and portfolio_df is not None:
 
     # ---- Performance stats ----
     st.subheader("Performance Statistics")
-    st.dataframe(stats_summary(current_w, proposed_w, returns, cov), width='stretch')
+    st.dataframe(
+        stats_summary(current_w, proposed_w, est_returns, cov, eval_returns=eval_returns),
+        width='stretch',
+    )
 
     st.divider()
 
     # ---- Cumulative returns ----
     st.subheader("Cumulative Returns")
     st.plotly_chart(
-        fig_cumulative_returns(returns, current_w, proposed_w),
+        fig_cumulative_returns(est_returns, current_w, proposed_w, eval_returns=eval_returns),
         width='stretch',
     )
 
@@ -222,7 +270,7 @@ if run and portfolio_df is not None:
 
     # ---- Correlation heatmap ----
     st.subheader("Asset Correlation Heatmap")
-    st.plotly_chart(fig_correlation_heatmap(returns), width='stretch')
+    st.plotly_chart(fig_correlation_heatmap(est_returns), width='stretch')
 
 elif run and portfolio_df is None:
     st.warning("Please provide a portfolio before running optimisation.")

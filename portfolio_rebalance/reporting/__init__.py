@@ -15,6 +15,7 @@ import plotly.graph_objects as go
 from portfolio_rebalance.risk import (
     portfolio_volatility,
     portfolio_stats,
+    portfolio_stats_realized,
     compute_correlation,
     TRADING_DAYS,
 )
@@ -45,13 +46,47 @@ def stats_summary(
     proposed_weights: np.ndarray,
     returns: pd.DataFrame,
     cov: pd.DataFrame,
+    eval_returns: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Return a two-row summary DataFrame comparing current vs proposed stats."""
-    current_stats = portfolio_stats(current_weights, returns, cov)
-    proposed_stats = portfolio_stats(proposed_weights, returns, cov)
+    """Return a two-row summary DataFrame comparing current vs proposed stats.
+
+    Parameters
+    ----------
+    current_weights, proposed_weights:
+        Weight vectors aligned with ``returns`` columns.
+    returns:
+        Daily returns used for the **estimation** period (same data the covariance
+        matrix and optimiser were fitted on).  Stats derived here are in-sample.
+    cov:
+        Annualised covariance matrix (from the estimation period).
+    eval_returns:
+        Optional **out-of-sample** daily returns.  When provided, performance
+        statistics (return, Sharpe, drawdown, *and* realised volatility) are
+        computed from this held-out period only, preventing look-ahead bias.
+        Rows are then labelled ``"… (OOS)"`` instead of ``"… (In-Sample)"``.
+
+    Notes
+    -----
+    When no ``eval_returns`` is supplied the stats are computed on the same data
+    used to fit the covariance matrix and run the optimiser.  They will be
+    biased — the proposed portfolio is guaranteed to look at least as good as
+    the current one in terms of volatility because that is what the optimiser
+    minimised.  Treat in-sample figures as a *historical fit*, not a forecast.
+    """
+    if eval_returns is not None:
+        current_stats = portfolio_stats_realized(current_weights, eval_returns)
+        proposed_stats = portfolio_stats_realized(proposed_weights, eval_returns)
+        suffix = " (OOS)"
+    else:
+        current_stats = portfolio_stats(current_weights, returns, cov)
+        proposed_stats = portfolio_stats(proposed_weights, returns, cov)
+        suffix = " (In-Sample)"
 
     rows = []
-    for label, stats in [("Current", current_stats), ("Proposed", proposed_stats)]:
+    for label, stats in [
+        (f"Current{suffix}", current_stats),
+        (f"Proposed{suffix}", proposed_stats),
+    ]:
         rows.append(
             {
                 "Portfolio": label,
@@ -145,24 +180,87 @@ def fig_cumulative_returns(
     returns: pd.DataFrame,
     current_weights: np.ndarray,
     proposed_weights: np.ndarray,
+    eval_returns: pd.DataFrame | None = None,
 ) -> go.Figure:
-    """Cumulative return chart for current and proposed portfolios."""
-    port_current = (returns.values @ current_weights)
-    port_proposed = (returns.values @ proposed_weights)
+    """Cumulative return chart for current and proposed portfolios.
 
-    cum_current = (1 + port_current).cumprod()
-    cum_proposed = (1 + port_proposed).cumprod()
+    Parameters
+    ----------
+    returns:
+        Estimation-period daily returns (used to fit the covariance / optimiser).
+    current_weights, proposed_weights:
+        Weight vectors.
+    eval_returns:
+        Optional out-of-sample daily returns.  When provided the chart shows
+        the estimation period followed by the evaluation period, with a vertical
+        dashed line marking the boundary.  The OOS segment is shown with a
+        lighter, dashed line style to distinguish it visually.
+    """
+    def _cum(ret_arr: np.ndarray, start_val: float = 1.0) -> np.ndarray:
+        return start_val * np.cumprod(1.0 + ret_arr)
 
-    index = returns.index
+    port_current_is = returns.values @ current_weights
+    port_proposed_is = returns.values @ proposed_weights
+    cum_current_is = _cum(port_current_is)
+    cum_proposed_is = _cum(port_proposed_is)
+    idx_is = returns.index
+
+    title = "Cumulative Return: Current vs Proposed (In-Sample Backtest)"
+
     fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(x=index, y=cum_current, name="Current", line=dict(color="#4C72B0"))
-    )
-    fig.add_trace(
-        go.Scatter(x=index, y=cum_proposed, name="Proposed", line=dict(color="#DD8452"))
-    )
+    fig.add_trace(go.Scatter(
+        x=idx_is, y=cum_current_is, name="Current",
+        line=dict(color="#4C72B0"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=idx_is, y=cum_proposed_is, name="Proposed",
+        line=dict(color="#DD8452"),
+    ))
+
+    if eval_returns is not None and not eval_returns.empty:
+        port_current_oos = eval_returns.values @ current_weights
+        port_proposed_oos = eval_returns.values @ proposed_weights
+        # Chain OOS returns so the cumulative curve is continuous
+        cum_current_oos = _cum(port_current_oos, start_val=cum_current_is[-1])
+        cum_proposed_oos = _cum(port_proposed_oos, start_val=cum_proposed_is[-1])
+        idx_oos = eval_returns.index
+
+        fig.add_trace(go.Scatter(
+            x=idx_oos, y=cum_current_oos, name="Current (OOS)",
+            line=dict(color="#4C72B0", dash="dash"),
+            showlegend=True,
+        ))
+        fig.add_trace(go.Scatter(
+            x=idx_oos, y=cum_proposed_oos, name="Proposed (OOS)",
+            line=dict(color="#DD8452", dash="dash"),
+            showlegend=True,
+        ))
+        # Vertical boundary line — use add_shape to avoid Plotly/Pandas
+        # datetime arithmetic incompatibility with add_vline
+        boundary_str = str(pd.Timestamp(idx_oos[0]).date())
+        fig.add_shape(
+            type="line",
+            xref="x",
+            yref="paper",
+            x0=boundary_str,
+            x1=boundary_str,
+            y0=0,
+            y1=1,
+            line=dict(color="grey", width=1.5, dash="dot"),
+        )
+        fig.add_annotation(
+            x=boundary_str,
+            yref="paper",
+            y=1.01,
+            text="OOS →",
+            showarrow=False,
+            font=dict(color="grey", size=11),
+            xanchor="left",
+        )
+        title = "Cumulative Return: Current vs Proposed (solid = in-sample · dashed = OOS)"
+
     fig.update_layout(
-        title="Cumulative Return: Current vs Proposed",
+        title=title,
         xaxis_title="Date",
         yaxis_title="Growth of $1",
         legend=dict(orientation="h", y=1.1),

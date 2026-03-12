@@ -78,6 +78,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default="sample",
         help="Covariance estimation method (default: sample).",
     )
+    parser.add_argument(
+        "--eval-frac",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "Hold out the last fraction of data as an out-of-sample evaluation window "
+            "(e.g. 0.2 = last 20%%). When omitted, performance stats are shown "
+            "in-sample (same data used for covariance estimation and optimisation)."
+        ),
+    )
 
     # Output
     parser.add_argument(
@@ -115,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         compute_covariance,
         portfolio_volatility,
         portfolio_stats,
+        split_returns,
     )
     from portfolio_rebalance.optimizer import rebalance
     from portfolio_rebalance.reporting import weights_table, stats_summary
@@ -145,7 +157,29 @@ def main(argv: list[str] | None = None) -> int:
     # 3. Risk model
     # ------------------------------------------------------------------
     returns = compute_returns(prices)
-    cov = compute_covariance(returns, annualise=True, method=args.cov_method)
+
+    # Optionally split into estimation / evaluation windows
+    eval_returns: pd.DataFrame | None = None
+    if args.eval_frac is not None:
+        if not 0.0 < args.eval_frac < 1.0:
+            print("ERROR: --eval-frac must be between 0 and 1 (exclusive).", file=sys.stderr)
+            return 1
+        est_returns, eval_returns = split_returns(returns, eval_frac=args.eval_frac)
+        n_est = len(est_returns)
+        n_oos = len(eval_returns)
+        print(
+            f"Data split: {n_est} days estimation / {n_oos} days OOS "
+            f"(eval-frac={args.eval_frac:.0%})"
+        )
+    else:
+        est_returns = returns
+        print(
+            "Note: performance stats are in-sample — the same data used to fit "
+            "the covariance matrix and run the optimiser.  Use --eval-frac to "
+            "hold out an out-of-sample evaluation window."
+        )
+
+    cov = compute_covariance(est_returns, annualise=True, method=args.cov_method)
 
     # Align portfolio to covariance matrix
     portfolio = portfolio[portfolio["ticker"].isin(cov.columns)].reset_index(drop=True)
@@ -175,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + "=" * 60)
     print("PERFORMANCE STATISTICS")
     print("=" * 60)
-    summary = stats_summary(current_w, proposed_w, returns, cov)
+    summary = stats_summary(current_w, proposed_w, est_returns, cov, eval_returns=eval_returns)
     print(summary.to_string())
 
     current_vol = portfolio_volatility(current_w, cov)
