@@ -12,7 +12,7 @@ Given a set of stocks and their current weights, it downloads historical prices,
 | `data` | Load holdings from CSV / dict; download adjusted prices via yfinance (swap-able to any paid API) |
 | `risk` | Compute log/simple returns, sample (or Ledoit-Wolf shrinkage) covariance matrix, annualised stats |
 | `optimizer` | Long-only, budget-constrained minimum-variance optimisation (SLSQP); optional max-position, turnover, per-position increase, and market-cap-aware limits |
-| `reporting` | Weights table, performance stats summary, Plotly charts |
+| `reporting` | Weights table, performance stats summary, Plotly charts, benchmark comparison |
 | `ui/dashboard` | Streamlit web app with interactive controls |
 | `cli` | Argparse-based CLI |
 
@@ -52,6 +52,9 @@ portfolio-rebalance --csv sample_portfolio.csv --period 5y --cov-method ledoit_w
 # Out-of-sample evaluation: hold out last 20% of history for testing
 portfolio-rebalance --csv sample_portfolio.csv --eval-frac 0.2
 
+# Benchmark comparison (default is S&P 500 via ^GSPC)
+portfolio-rebalance --csv sample_portfolio.csv --benchmark ^GSPC
+
 # OOS + constraints
 portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5 --eval-frac 0.2
 ```
@@ -88,6 +91,7 @@ The sidebar lets you:
 - Set a max-position limit
 - Cap how much each ticker can increase versus its current weight
 - Add a market-cap-aware cap for smaller companies
+- Compare against a benchmark (default S&P 500)
 - Enable/disable a one-way turnover constraint
 - Enable out-of-sample evaluation and choose a held-out evaluation window
 

@@ -47,6 +47,9 @@ def stats_summary(
     returns: pd.DataFrame,
     cov: pd.DataFrame,
     eval_returns: pd.DataFrame | None = None,
+    benchmark_returns: pd.Series | None = None,
+    benchmark_eval_returns: pd.Series | None = None,
+    benchmark_label: str = "S&P 500",
 ) -> pd.DataFrame:
     """Return a two-row summary DataFrame comparing current vs proposed stats.
 
@@ -64,6 +67,12 @@ def stats_summary(
         statistics (return, Sharpe, drawdown, *and* realised volatility) are
         computed from this held-out period only, preventing look-ahead bias.
         Rows are then labelled ``"… (OOS)"`` instead of ``"… (In-Sample)"``.
+    benchmark_returns:
+        Optional benchmark daily returns for the estimation period.
+    benchmark_eval_returns:
+        Optional benchmark daily returns for the evaluation period.
+    benchmark_label:
+        Display name for the benchmark row.
 
     Notes
     -----
@@ -96,6 +105,27 @@ def stats_summary(
                 "Max Drawdown": f"{stats['max_drawdown']:.2%}",
             }
         )
+
+    bench_series: pd.Series | None
+    if eval_returns is not None:
+        bench_series = benchmark_eval_returns
+    else:
+        bench_series = benchmark_returns
+
+    if bench_series is not None and not bench_series.empty:
+        bench_df = pd.DataFrame({"BENCH": bench_series}).dropna()
+        if not bench_df.empty:
+            bench_stats = portfolio_stats_realized(np.array([1.0]), bench_df)
+            rows.append(
+                {
+                    "Portfolio": f"{benchmark_label}{suffix}",
+                    "Annualised Volatility": f"{bench_stats['volatility']:.2%}",
+                    "Annualised Return": f"{bench_stats['mean_return']:.2%}",
+                    "Sharpe Ratio": f"{bench_stats['sharpe']:.2f}",
+                    "Max Drawdown": f"{bench_stats['max_drawdown']:.2%}",
+                }
+            )
+
     return pd.DataFrame(rows).set_index("Portfolio")
 
 
@@ -181,6 +211,9 @@ def fig_cumulative_returns(
     current_weights: np.ndarray,
     proposed_weights: np.ndarray,
     eval_returns: pd.DataFrame | None = None,
+    benchmark_returns: pd.Series | None = None,
+    benchmark_eval_returns: pd.Series | None = None,
+    benchmark_label: str = "S&P 500",
 ) -> go.Figure:
     """Cumulative return chart for current and proposed portfolios.
 
@@ -205,7 +238,14 @@ def fig_cumulative_returns(
     cum_proposed_is = _cum(port_proposed_is)
     idx_is = returns.index
 
-    title = "Cumulative Return: Current vs Proposed (In-Sample Backtest)"
+    has_benchmark = benchmark_returns is not None and not benchmark_returns.empty
+    if has_benchmark:
+        title = (
+            f"Cumulative Return: Current vs Proposed vs {benchmark_label} "
+            "(In-Sample Backtest)"
+        )
+    else:
+        title = "Cumulative Return: Current vs Proposed (In-Sample Backtest)"
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -216,6 +256,17 @@ def fig_cumulative_returns(
         x=idx_is, y=cum_proposed_is, name="Proposed",
         line=dict(color="#DD8452"),
     ))
+
+    if benchmark_returns is not None and not benchmark_returns.empty:
+        bench_is = benchmark_returns.reindex(idx_is).dropna()
+        if not bench_is.empty:
+            cum_bench_is = _cum(bench_is.values)
+            fig.add_trace(go.Scatter(
+                x=bench_is.index,
+                y=cum_bench_is,
+                name=benchmark_label,
+                line=dict(color="#55A868"),
+            ))
 
     if eval_returns is not None and not eval_returns.empty:
         port_current_oos = eval_returns.values @ current_weights
@@ -235,6 +286,24 @@ def fig_cumulative_returns(
             line=dict(color="#DD8452", dash="dash"),
             showlegend=True,
         ))
+
+        if benchmark_eval_returns is not None and not benchmark_eval_returns.empty:
+            bench_oos = benchmark_eval_returns.reindex(idx_oos).dropna()
+            if not bench_oos.empty:
+                bench_start = 1.0
+                if benchmark_returns is not None and not benchmark_returns.empty:
+                    bench_is = benchmark_returns.reindex(idx_is).dropna()
+                    if not bench_is.empty:
+                        bench_start = _cum(bench_is.values)[-1]
+                cum_bench_oos = _cum(bench_oos.values, start_val=bench_start)
+                fig.add_trace(go.Scatter(
+                    x=bench_oos.index,
+                    y=cum_bench_oos,
+                    name=f"{benchmark_label} (OOS)",
+                    line=dict(color="#55A868", dash="dash"),
+                    showlegend=True,
+                ))
+
         # Vertical boundary line — use add_shape to avoid Plotly/Pandas
         # datetime arithmetic incompatibility with add_vline
         boundary_str = str(pd.Timestamp(idx_oos[0]).date())
@@ -257,7 +326,13 @@ def fig_cumulative_returns(
             font=dict(color="grey", size=11),
             xanchor="left",
         )
-        title = "Cumulative Return: Current vs Proposed (solid = in-sample · dashed = OOS)"
+        if has_benchmark:
+            title = (
+                f"Cumulative Return: Current vs Proposed vs {benchmark_label} "
+                "(solid = in-sample · dashed = OOS)"
+            )
+        else:
+            title = "Cumulative Return: Current vs Proposed (solid = in-sample · dashed = OOS)"
 
     fig.update_layout(
         title=title,

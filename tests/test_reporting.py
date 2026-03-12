@@ -123,6 +123,23 @@ def test_stats_summary_oos_uses_held_out_period():
     assert is_ret != oos_ret, "OOS return should use different data from in-sample return"
 
 
+def test_stats_summary_includes_benchmark_row_when_provided():
+    prices = _make_returns()
+    ret = compute_returns(prices)
+    cov = compute_covariance(ret)
+    w = np.full(4, 0.25)
+    benchmark = ret.iloc[:, 0]
+    summary = stats_summary(
+        w,
+        w,
+        ret,
+        cov,
+        benchmark_returns=benchmark,
+        benchmark_label="S&P 500",
+    )
+    assert "S&P 500 (In-Sample)" in summary.index
+
+
 # ---------------------------------------------------------------------------
 # Plotly figures (just ensure they are created without error)
 # ---------------------------------------------------------------------------
@@ -168,3 +185,37 @@ def test_fig_cumulative_returns_oos():
     # Should have 4 scatter traces (2 in-sample + 2 OOS)
     scatter_traces = [t for t in fig.data if t.type == "scatter"]
     assert len(scatter_traces) == 4
+
+
+def test_fig_cumulative_returns_with_benchmark():
+    prices = _make_returns(n_assets=4)
+    ret = compute_returns(prices)
+    w = np.full(4, 0.25)
+    benchmark = ret.iloc[:, 0]
+    fig = fig_cumulative_returns(ret, w, w, benchmark_returns=benchmark)
+    assert fig is not None
+    scatter_traces = [t for t in fig.data if t.type == "scatter"]
+    assert len(scatter_traces) == 3
+
+
+def test_fig_cumulative_returns_oos_with_benchmark():
+    from portfolio_rebalance.risk import split_returns
+
+    prices = _make_returns(n_days=500, n_assets=4)
+    ret = compute_returns(prices)
+    est, oos = split_returns(ret, eval_frac=0.2)
+    w = np.full(4, 0.25)
+    benchmark_est = est.iloc[:, 0]
+    benchmark_oos = oos.iloc[:, 0]
+    fig = fig_cumulative_returns(
+        est,
+        w,
+        w,
+        eval_returns=oos,
+        benchmark_returns=benchmark_est,
+        benchmark_eval_returns=benchmark_oos,
+        benchmark_label="S&P 500",
+    )
+    assert fig is not None
+    scatter_traces = [t for t in fig.data if t.type == "scatter"]
+    assert len(scatter_traces) == 6

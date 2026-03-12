@@ -17,6 +17,9 @@ portfolio-rebalance --csv sample_portfolio.csv --max-increase 0.05
 # Cap sub-10B market-cap names at 3 % each
 portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03
 
+# Compare against S&P 500 (default benchmark is ^GSPC)
+portfolio-rebalance --csv sample_portfolio.csv --benchmark ^GSPC
+
 # Use a longer lookback period
 portfolio-rebalance --csv sample_portfolio.csv --period 5y
 """
@@ -133,6 +136,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "in-sample (same data used for covariance estimation and optimisation)."
         ),
     )
+    parser.add_argument(
+        "--benchmark",
+        default="^GSPC",
+        metavar="TICKER",
+        help=(
+            "Benchmark ticker for comparison in stats/charts "
+            "(default: ^GSPC, S&P 500 index). Use 'none' to disable."
+        ),
+    )
 
     # Output
     parser.add_argument(
@@ -185,12 +197,12 @@ def main(argv: list[str] | None = None) -> int:
         load_portfolio_dict,
         load_data,
         download_market_caps,
+        download_prices,
     )
     from portfolio_rebalance.risk import (
         compute_returns,
         compute_covariance,
         portfolio_volatility,
-        portfolio_stats,
         split_returns,
     )
     from portfolio_rebalance.optimizer import rebalance
@@ -277,6 +289,41 @@ def main(argv: list[str] | None = None) -> int:
 
     cov = compute_covariance(est_returns, annualise=True, method=args.cov_method)
 
+    benchmark_returns: pd.Series | None = None
+    benchmark_eval_returns: pd.Series | None = None
+    benchmark_label = "S&P 500"
+    benchmark_ticker = (args.benchmark or "").strip()
+    if benchmark_ticker and benchmark_ticker.lower() != "none":
+        try:
+            bench_prices = download_prices([benchmark_ticker], period=args.period)
+            if not bench_prices.empty:
+                bench_ret_df = compute_returns(bench_prices)
+                bench_series = bench_ret_df.iloc[:, 0]
+                benchmark_label = (
+                    "S&P 500" if benchmark_ticker.upper() == "^GSPC" else benchmark_ticker
+                )
+
+                benchmark_returns = bench_series.reindex(est_returns.index).dropna()
+                if eval_returns is not None:
+                    benchmark_eval_returns = bench_series.reindex(eval_returns.index).dropna()
+
+                if benchmark_returns.empty:
+                    print(
+                        f"Warning: benchmark '{benchmark_ticker}' has no overlap with "
+                        "portfolio estimation dates; skipping benchmark comparison."
+                    )
+                    benchmark_returns = None
+                    benchmark_eval_returns = None
+                else:
+                    print(
+                        f"Benchmark comparison enabled: {benchmark_ticker} "
+                        f"({len(benchmark_returns)} overlapping estimation days)"
+                    )
+            else:
+                print(f"Warning: no benchmark prices for '{benchmark_ticker}'.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Warning: benchmark download failed for '{benchmark_ticker}': {exc}")
+
     # Align portfolio to covariance matrix
     portfolio = portfolio[portfolio["ticker"].isin(cov.columns)].reset_index(drop=True)
 
@@ -336,7 +383,16 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + "=" * 60)
     print("PERFORMANCE STATISTICS")
     print("=" * 60)
-    summary = stats_summary(current_w, proposed_w, est_returns, cov, eval_returns=eval_returns)
+    summary = stats_summary(
+        current_w,
+        proposed_w,
+        est_returns,
+        cov,
+        eval_returns=eval_returns,
+        benchmark_returns=benchmark_returns,
+        benchmark_eval_returns=benchmark_eval_returns,
+        benchmark_label=benchmark_label,
+    )
     print(summary.to_string())
 
     current_vol = portfolio_volatility(current_w, cov)

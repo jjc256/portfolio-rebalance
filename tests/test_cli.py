@@ -60,6 +60,7 @@ def test_parser_defaults():
     assert args.max_increase is None
     assert args.small_cap_threshold_b is None
     assert args.small_cap_max_weight == 0.05
+    assert args.benchmark == "^GSPC"
 
 
 def test_parser_full_history_flag():
@@ -88,3 +89,9 @@ def test_parser_small_cap_args():
     )
     assert args.small_cap_threshold_b == 10
     assert args.small_cap_max_weight == 0.03
+
+
+def test_parser_benchmark_arg():
+    parser = _build_parser()
+    args = parser.parse_args(["--holdings", "AAPL=1.0", "--benchmark", "SPY"])
+    assert args.benchmark == "SPY"

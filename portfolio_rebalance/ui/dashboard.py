@@ -25,6 +25,7 @@ from portfolio_rebalance.data import (
     load_portfolio_dict,
     load_data,
     download_market_caps,
+    download_prices,
 )
 from portfolio_rebalance.risk import (
     compute_returns,
@@ -193,6 +194,19 @@ with st.sidebar:
         small_cap_max_weight = small_cap_max_weight_pct / 100.0
 
     st.divider()
+    st.header("Benchmark")
+    use_benchmark = st.checkbox(
+        "Compare vs benchmark",
+        value=True,
+        help="Adds benchmark stats and cumulative-return lines for context.",
+    )
+    benchmark_ticker = st.text_input(
+        "Benchmark ticker",
+        value="^GSPC",
+        help="S&P 500 index ticker is ^GSPC. You can also use SPY.",
+    ).strip().upper()
+
+    st.divider()
     st.header("Evaluation")
     use_oos = st.checkbox(
         "Out-of-sample evaluation",
@@ -292,6 +306,31 @@ if run and portfolio_df is not None:
 
     cov = compute_covariance(est_returns, annualise=True)
 
+    benchmark_returns: pd.Series | None = None
+    benchmark_eval_returns: pd.Series | None = None
+    benchmark_label = "S&P 500"
+    if use_benchmark and benchmark_ticker and benchmark_ticker.lower() != "none":
+        try:
+            bench_prices = download_prices([benchmark_ticker], period=period)
+            if not bench_prices.empty:
+                bench_ret_df = compute_returns(bench_prices)
+                bench_series = bench_ret_df.iloc[:, 0]
+                benchmark_label = "S&P 500" if benchmark_ticker == "^GSPC" else benchmark_ticker
+                benchmark_returns = bench_series.reindex(est_returns.index).dropna()
+                if eval_returns is not None:
+                    benchmark_eval_returns = bench_series.reindex(eval_returns.index).dropna()
+
+                if benchmark_returns.empty:
+                    benchmark_returns = None
+                    benchmark_eval_returns = None
+                    st.warning(
+                        f"Benchmark '{benchmark_ticker}' has no overlapping dates and was skipped."
+                    )
+            else:
+                st.warning(f"No benchmark prices found for '{benchmark_ticker}'.")
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Benchmark download failed for '{benchmark_ticker}': {exc}")
+
     # Align portfolio to available tickers
     portfolio_filtered = portfolio_filtered[
         portfolio_filtered["ticker"].isin(cov.columns)
@@ -383,7 +422,16 @@ if run and portfolio_df is not None:
     # ---- Performance stats ----
     st.subheader("Performance Statistics")
     st.dataframe(
-        stats_summary(current_w, proposed_w, est_returns, cov, eval_returns=eval_returns),
+        stats_summary(
+            current_w,
+            proposed_w,
+            est_returns,
+            cov,
+            eval_returns=eval_returns,
+            benchmark_returns=benchmark_returns,
+            benchmark_eval_returns=benchmark_eval_returns,
+            benchmark_label=benchmark_label,
+        ),
         width='stretch',
     )
 
@@ -392,7 +440,15 @@ if run and portfolio_df is not None:
     # ---- Cumulative returns ----
     st.subheader("Cumulative Returns")
     st.plotly_chart(
-        fig_cumulative_returns(est_returns, current_w, proposed_w, eval_returns=eval_returns),
+        fig_cumulative_returns(
+            est_returns,
+            current_w,
+            proposed_w,
+            eval_returns=eval_returns,
+            benchmark_returns=benchmark_returns,
+            benchmark_eval_returns=benchmark_eval_returns,
+            benchmark_label=benchmark_label,
+        ),
         width='stretch',
     )
 
