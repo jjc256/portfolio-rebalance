@@ -36,30 +36,39 @@ portfolio-rebalance --csv sample_portfolio.csv
 
 # Inline holdings
 portfolio-rebalance --holdings AAPL=0.4 MSFT=0.3 GOOGL=0.3
+```
 
-# With constraints: max 25 % per stock, max 50 % one-way turnover
+Common options at a glance:
+
+| Group | Options |
+|---|---|
+| Input | `--csv FILE` or `--holdings TICKER=VALUE ...` |
+| Data window | `--period 3y`, `--full-history` |
+| Optimisation | `--objective {max_sharpe,min_variance}`, `--cov-method {sample,ledoit_wolf}` |
+| Risk-free rate | `--risk-free-source {manual,treasury}`, `--risk-free-rate 0.03`, `--risk-free-tenor 3m` |
+| Constraints | `--max-weight 0.25`, `--turnover 0.5`, `--max-increase 0.05`, `--small-cap-threshold-b 10`, `--small-cap-max-weight 0.03` |
+| Evaluation/reporting | `--eval-frac 0.2`, `--benchmark ^GSPC`, `--verbose` |
+
+Concise examples:
+
+```bash
+# Constrained rebalance
 portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5
 
-# Keep small speculative positions from scaling too quickly
-portfolio-rebalance --csv sample_portfolio.csv --max-increase 0.05
+# Smaller-cap cap + limited scaling of existing positions
+portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03 --max-increase 0.05
 
-# Cap smaller-cap names (below $10B) at 3% each
-portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03
+# Longer lookback + shrinkage covariance + OOS evaluation
+portfolio-rebalance --csv sample_portfolio.csv --period 5y --cov-method ledoit_wolf --eval-frac 0.2
 
-# 5-year lookback, Ledoit-Wolf covariance shrinkage
-portfolio-rebalance --csv sample_portfolio.csv --period 5y --cov-method ledoit_wolf
+# Sharpe objective with live U.S. Treasury risk-free rate
+portfolio-rebalance --csv sample_portfolio.csv --objective max_sharpe --risk-free-source treasury --risk-free-tenor 3m
+```
 
-# Out-of-sample evaluation: hold out last 20% of history for testing
-portfolio-rebalance --csv sample_portfolio.csv --eval-frac 0.2
+For the full option list, run:
 
-# Benchmark comparison (default is S&P 500 via ^GSPC)
-portfolio-rebalance --csv sample_portfolio.csv --benchmark ^GSPC
-
-# Pull live risk-free rate from U.S. Treasury (latest 3M yield)
-portfolio-rebalance --csv sample_portfolio.csv --risk-free-source treasury --risk-free-tenor 3m
-
-# OOS + constraints
-portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5 --eval-frac 0.2
+```bash
+portfolio-rebalance --help
 ```
 
 ### Test out-of-sample (OOS) performance
