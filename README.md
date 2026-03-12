@@ -42,7 +42,31 @@ portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5
 
 # 5-year lookback, Ledoit-Wolf covariance shrinkage
 portfolio-rebalance --csv sample_portfolio.csv --period 5y --cov-method ledoit_wolf
+
+# Out-of-sample evaluation: hold out last 20% of history for testing
+portfolio-rebalance --csv sample_portfolio.csv --eval-frac 0.2
+
+# OOS + constraints
+portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5 --eval-frac 0.2
 ```
+
+### Test out-of-sample (OOS) performance
+
+By default, summary stats are **in-sample** (the same return history is used to fit
+the covariance matrix and evaluate performance). This can be optimistic.
+
+Use `--eval-frac` to split returns into:
+- An estimation window (used for covariance estimation + optimisation)
+- A held-out OOS window (used only for performance evaluation)
+
+Example:
+
+```bash
+portfolio-rebalance --csv sample_portfolio.csv --eval-frac 0.2
+```
+
+This uses the first ~80% of observations to build the model and the last ~20%
+to report OOS return, Sharpe, drawdown, and realised volatility.
 
 ### Launch the web dashboard
 
@@ -57,11 +81,12 @@ The sidebar lets you:
 - Choose a lookback period (1 y – 5 y)
 - Set a max-position limit
 - Enable/disable a one-way turnover constraint
+- Enable out-of-sample evaluation and choose a held-out evaluation window
 
 After clicking **Run Optimisation** the dashboard shows:
 - KPI metrics (current vs proposed volatility, reduction %, turnover)
 - Side-by-side weight bar chart and table
-- Performance statistics (annualised return, Sharpe, max drawdown)
+- Performance statistics (annualised return, Sharpe, max drawdown; in-sample or OOS)
 - Cumulative return chart
 - Asset correlation heatmap
 
@@ -130,4 +155,10 @@ Add a new `elif backend == "my_vendor":` branch to `download_prices()` and call 
 pytest
 ```
 
-All 42 tests cover data loading, risk calculations, the optimiser (including the analytical 2-asset solution), and report generation.
+To run only out-of-sample split tests:
+
+```bash
+pytest tests/test_risk.py -k split_returns
+```
+
+The test suite covers data loading, risk calculations (including estimation/OOS splitting), the optimiser (including the analytical 2-asset solution), and report generation.
