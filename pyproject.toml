@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portfolio-rebalance"
+version = "0.1.0"
+description = "Minimum-variance portfolio rebalancer with CLI and web dashboard"
+requires-python = ">=3.9"
+dependencies = [
+    "yfinance>=0.2.36",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "streamlit>=1.30.0",
+    "plotly>=5.18.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0"]
+
+[project.scripts]
+portfolio-rebalance = "portfolio_rebalance.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["portfolio_rebalance*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

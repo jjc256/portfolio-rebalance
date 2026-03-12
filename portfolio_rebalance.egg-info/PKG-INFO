@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: portfolio-rebalance
+Version: 0.1.0
+Summary: Minimum-variance portfolio rebalancer with CLI and web dashboard
+Requires-Python: >=3.9
+Requires-Dist: yfinance>=0.2.36
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: scipy>=1.10.0
+Requires-Dist: streamlit>=1.30.0
+Requires-Dist: plotly>=5.18.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"

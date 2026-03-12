@@ -1,0 +1,2 @@
+[console_scripts]
+portfolio-rebalance = portfolio_rebalance.cli:main
