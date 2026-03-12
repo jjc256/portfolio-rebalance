@@ -11,6 +11,12 @@ portfolio-rebalance --holdings AAPL=0.4 MSFT=0.3 GOOGL=0.3
 # With constraints
 portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5
 
+# Keep speculative positions from scaling too quickly
+portfolio-rebalance --csv sample_portfolio.csv --max-increase 0.05
+
+# Cap sub-10B market-cap names at 3 % each
+portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03
+
 # Use a longer lookback period
 portfolio-rebalance --csv sample_portfolio.csv --period 5y
 """
@@ -56,6 +62,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default="3y",
         help="Lookback period for historical data (default: 3y).",
     )
+    parser.add_argument(
+        "--full-history",
+        action="store_true",
+        help=(
+            "Drop tickers without complete history over the selected lookback "
+            "window so the return series spans the full period."
+        ),
+    )
 
     # Constraints
     parser.add_argument(
@@ -71,6 +85,36 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="T",
         help="Maximum one-way turnover as a fraction, e.g. 0.5 (default: unconstrained).",
+    )
+    parser.add_argument(
+        "--max-increase",
+        type=float,
+        default=None,
+        metavar="D",
+        help=(
+            "Maximum per-position increase versus current weight, e.g. 0.05 = "
+            "a ticker can rise by at most +5 percentage points in one rebalance "
+            "(default: unconstrained)."
+        ),
+    )
+    parser.add_argument(
+        "--small-cap-threshold-b",
+        type=float,
+        default=None,
+        metavar="B",
+        help=(
+            "If set, tickers with market cap below this threshold (in billions "
+            "USD) are capped using --small-cap-max-weight."
+        ),
+    )
+    parser.add_argument(
+        "--small-cap-max-weight",
+        type=float,
+        default=0.05,
+        metavar="W",
+        help=(
+            "Max weight for tickers below --small-cap-threshold-b (default: 0.05)."
+        ),
     )
     parser.add_argument(
         "--cov-method",
@@ -117,10 +161,31 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
+    if not 0.0 < args.max_weight <= 1.0:
+        print("ERROR: --max-weight must be in (0, 1].", file=sys.stderr)
+        return 1
+    if args.turnover is not None and not 0.0 <= args.turnover <= 2.0:
+        print("ERROR: --turnover must be between 0 and 2.", file=sys.stderr)
+        return 1
+    if args.max_increase is not None and not 0.0 <= args.max_increase <= 1.0:
+        print("ERROR: --max-increase must be between 0 and 1.", file=sys.stderr)
+        return 1
+    if args.small_cap_threshold_b is not None and args.small_cap_threshold_b <= 0.0:
+        print("ERROR: --small-cap-threshold-b must be > 0.", file=sys.stderr)
+        return 1
+    if not 0.0 < args.small_cap_max_weight <= 1.0:
+        print("ERROR: --small-cap-max-weight must be in (0, 1].", file=sys.stderr)
+        return 1
+
     # ------------------------------------------------------------------
     # 1. Load portfolio
     # ------------------------------------------------------------------
-    from portfolio_rebalance.data import load_portfolio_csv, load_portfolio_dict, load_data
+    from portfolio_rebalance.data import (
+        load_portfolio_csv,
+        load_portfolio_dict,
+        load_data,
+        download_market_caps,
+    )
     from portfolio_rebalance.risk import (
         compute_returns,
         compute_covariance,
@@ -144,7 +209,12 @@ def main(argv: list[str] | None = None) -> int:
     # ------------------------------------------------------------------
     print(f"Downloading historical prices (period={args.period})…")
     try:
-        portfolio, prices = load_data(portfolio, period=args.period)
+        input_tickers = portfolio["ticker"].tolist()
+        portfolio, prices = load_data(
+            portfolio,
+            period=args.period,
+            require_full_history=args.full_history,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: Failed to download price data: {exc}", file=sys.stderr)
         return 1
@@ -153,10 +223,36 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: Not enough price data downloaded.", file=sys.stderr)
         return 1
 
+    kept_tickers = set(portfolio["ticker"].tolist())
+    dropped_tickers = sorted(set(input_tickers) - kept_tickers)
+    if dropped_tickers:
+        reason = "missing full-period history" if args.full_history else "missing price data"
+        print(
+            f"Dropped {len(dropped_tickers)} ticker(s) ({reason}): "
+            f"{', '.join(dropped_tickers)}"
+        )
+
     # ------------------------------------------------------------------
     # 3. Risk model
     # ------------------------------------------------------------------
     returns = compute_returns(prices)
+
+    first_valid = prices.apply(lambda s: s.first_valid_index())
+    latest_start = first_valid.max()
+    first_price_date = prices.index.min()
+    if latest_start > first_price_date:
+        drivers = sorted(first_valid[first_valid == latest_start].index.tolist())
+        print(
+            "Effective common history starts later "
+            f"({returns.index.min().date()}) because newer ticker data begins on "
+            f"{latest_start.date()} for: {', '.join(drivers)}"
+        )
+    else:
+        print(
+            "Return history window: "
+            f"{returns.index.min().date()} to {returns.index.max().date()} "
+            f"({len(returns)} trading days)"
+        )
 
     # Optionally split into estimation / evaluation windows
     eval_returns: pd.DataFrame | None = None
@@ -184,15 +280,46 @@ def main(argv: list[str] | None = None) -> int:
     # Align portfolio to covariance matrix
     portfolio = portfolio[portfolio["ticker"].isin(cov.columns)].reset_index(drop=True)
 
+    # Optional: tighten caps for smaller-cap names (size-risk proxy)
+    per_asset_max: pd.Series | None = None
+    if args.small_cap_threshold_b is not None:
+        market_caps = download_market_caps(portfolio["ticker"].tolist())
+        cap_threshold_usd = float(args.small_cap_threshold_b) * 1e9
+
+        per_asset_max = pd.Series(args.max_weight, index=portfolio["ticker"], dtype=float)
+        small_mask = market_caps < cap_threshold_usd
+        small_tickers = sorted(market_caps[small_mask].index.tolist())
+        if small_tickers:
+            cap_for_small = min(args.max_weight, args.small_cap_max_weight)
+            per_asset_max.loc[small_tickers] = cap_for_small
+            print(
+                f"Applied small-cap cap: {len(small_tickers)} ticker(s) below "
+                f"${args.small_cap_threshold_b:.1f}B limited to {cap_for_small:.2%} max"
+            )
+
+        missing_caps = sorted(market_caps[market_caps.isna()].index.tolist())
+        if missing_caps:
+            print(
+                "Warning: market cap unavailable for "
+                f"{len(missing_caps)} ticker(s), using global max-weight: "
+                f"{', '.join(missing_caps)}"
+            )
+
     # ------------------------------------------------------------------
     # 4. Optimise
     # ------------------------------------------------------------------
-    rebalanced = rebalance(
-        portfolio,
-        cov,
-        max_weight=args.max_weight,
-        turnover_limit=args.turnover,
-    )
+    try:
+        rebalanced = rebalance(
+            portfolio,
+            cov,
+            max_weight=args.max_weight,
+            max_weights=per_asset_max,
+            turnover_limit=args.turnover,
+            max_increase=args.max_increase,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
     current_w = rebalanced["weight"].values
     proposed_w = rebalanced["proposed_weight"].values

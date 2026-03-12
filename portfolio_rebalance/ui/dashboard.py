@@ -7,6 +7,7 @@ Run with:
 from __future__ import annotations
 
 import io
+import inspect
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from portfolio_rebalance.data import (
     load_portfolio_csv,
     load_portfolio_dict,
     load_data,
+    download_market_caps,
 )
 from portfolio_rebalance.risk import (
     compute_returns,
@@ -112,25 +114,83 @@ with st.sidebar:
         ["1y", "2y", "3y", "5y"],
         index=2,
     )
-    max_weight = st.slider(
-        "Max position size",
-        min_value=0.05,
-        max_value=1.0,
-        value=1.0,
-        step=0.05,
-        format="%.0%%",
+    require_full_history = st.checkbox(
+        "Preserve full lookback (drop late-start tickers)",
+        value=False,
+        help=(
+            "When enabled, assets without complete price history over the selected "
+            "period are removed so returns span the full window."
+        ),
     )
+    max_weight_pct = st.slider(
+        "Max position size",
+        min_value=5,
+        max_value=100,
+        value=100,
+        step=5,
+        format="%d%%",
+    )
+    max_weight = max_weight_pct / 100.0
+    use_max_increase = st.checkbox(
+        "Cap per-position increase",
+        value=False,
+        help=(
+            "Limit how much any ticker can increase versus its current weight in "
+            "one rebalance step."
+        ),
+    )
+    max_increase: float | None = None
+    if use_max_increase:
+        max_increase_pct = st.slider(
+            "Max increase per ticker",
+            min_value=1,
+            max_value=30,
+            value=5,
+            step=1,
+            format="%d%%",
+        )
+        max_increase = max_increase_pct / 100.0
+
     use_turnover = st.checkbox("Turnover constraint", value=False)
     turnover_limit: float | None = None
     if use_turnover:
-        turnover_limit = st.slider(
+        turnover_pct = st.slider(
             "Max one-way turnover",
-            min_value=0.05,
-            max_value=1.0,
-            value=0.5,
-            step=0.05,
-            format="%.0%%",
+            min_value=5,
+            max_value=100,
+            value=50,
+            step=5,
+            format="%d%%",
         )
+        turnover_limit = turnover_pct / 100.0
+
+    use_small_cap_cap = st.checkbox(
+        "Market-cap risk cap",
+        value=False,
+        help=(
+            "Apply a tighter max-weight to smaller-cap names as a simple risk "
+            "proxy."
+        ),
+    )
+    small_cap_threshold_b: float | None = None
+    small_cap_max_weight: float | None = None
+    if use_small_cap_cap:
+        small_cap_threshold_b = st.slider(
+            "Small-cap threshold (USD billions)",
+            min_value=1,
+            max_value=50,
+            value=10,
+            step=1,
+        )
+        small_cap_max_weight_pct = st.slider(
+            "Max weight for small-cap names",
+            min_value=1,
+            max_value=20,
+            value=5,
+            step=1,
+            format="%d%%",
+        )
+        small_cap_max_weight = small_cap_max_weight_pct / 100.0
 
     st.divider()
     st.header("Evaluation")
@@ -146,14 +206,15 @@ with st.sidebar:
     )
     eval_frac: float | None = None
     if use_oos:
-        eval_frac = st.slider(
+        eval_frac_pct = st.slider(
             "Evaluation window (% of data held out)",
-            min_value=0.10,
-            max_value=0.40,
-            value=0.20,
-            step=0.05,
-            format="%.0%%",
+            min_value=10,
+            max_value=40,
+            value=20,
+            step=5,
+            format="%d%%",
         )
+        eval_frac = eval_frac_pct / 100.0
 
     run = st.button("🚀 Run Optimisation", type="primary", width='stretch')
 
@@ -170,7 +231,24 @@ if portfolio_df is not None:
 if run and portfolio_df is not None:
     with st.spinner("Downloading price data and optimising…"):
         try:
-            portfolio_filtered, prices = load_data(portfolio_df, period=period)
+            input_tickers = portfolio_df["ticker"].tolist()
+            supports_full_history = (
+                "require_full_history" in inspect.signature(load_data).parameters
+            )
+            if supports_full_history:
+                portfolio_filtered, prices = load_data(
+                    portfolio_df,
+                    period=period,
+                    require_full_history=require_full_history,
+                )
+            else:
+                portfolio_filtered, prices = load_data(portfolio_df, period=period)
+                if require_full_history:
+                    st.warning(
+                        "This runtime uses an older portfolio_rebalance build that "
+                        "doesn't support full-history filtering yet. "
+                        "Reinstall with 'pip install -e .' from the repo root to enable it."
+                    )
         except Exception as exc:  # noqa: BLE001
             st.error(f"Data download failed: {exc}")
             st.stop()
@@ -179,7 +257,31 @@ if run and portfolio_df is not None:
         st.error("Not enough price data. Try a different period or check your tickers.")
         st.stop()
 
+    dropped_tickers = sorted(set(input_tickers) - set(portfolio_filtered["ticker"].tolist()))
+    if dropped_tickers:
+        reason = (
+            "without full-period history"
+            if require_full_history
+            else "with missing price data"
+        )
+        st.warning(
+            f"Dropped {len(dropped_tickers)} ticker(s) {reason}: "
+            f"{', '.join(dropped_tickers)}"
+        )
+
     returns = compute_returns(prices)
+
+    first_valid = prices.apply(lambda s: s.first_valid_index())
+    latest_start = first_valid.max()
+    first_price_date = prices.index.min()
+    if latest_start > first_price_date:
+        limiting = sorted(first_valid[first_valid == latest_start].index.tolist())
+        st.info(
+            "Common return history starts later because not all tickers have data "
+            f"from the selected window start. Effective return range: "
+            f"{returns.index.min().date()} to {returns.index.max().date()}. "
+            f"Latest start date is {latest_start.date()} for: {', '.join(limiting)}."
+        )
 
     # Split into estimation and (optional) evaluation windows
     eval_returns: pd.DataFrame | None = None
@@ -195,12 +297,40 @@ if run and portfolio_df is not None:
         portfolio_filtered["ticker"].isin(cov.columns)
     ].reset_index(drop=True)
 
-    rebalanced = rebalance(
-        portfolio_filtered,
-        cov,
-        max_weight=max_weight,
-        turnover_limit=turnover_limit,
-    )
+    per_asset_max: pd.Series | None = None
+    if use_small_cap_cap and small_cap_threshold_b is not None and small_cap_max_weight is not None:
+        market_caps = download_market_caps(portfolio_filtered["ticker"].tolist())
+        threshold_usd = float(small_cap_threshold_b) * 1e9
+        per_asset_max = pd.Series(max_weight, index=portfolio_filtered["ticker"], dtype=float)
+
+        small_mask = market_caps < threshold_usd
+        small_tickers = sorted(market_caps[small_mask].index.tolist())
+        if small_tickers:
+            per_asset_max.loc[small_tickers] = min(max_weight, small_cap_max_weight)
+            st.info(
+                f"Applied market-cap cap to {len(small_tickers)} ticker(s) below "
+                f"${small_cap_threshold_b:.0f}B."
+            )
+
+        missing_caps = sorted(market_caps[market_caps.isna()].index.tolist())
+        if missing_caps:
+            st.warning(
+                "Market cap unavailable for "
+                f"{len(missing_caps)} ticker(s); using global max position for those names."
+            )
+
+    try:
+        rebalanced = rebalance(
+            portfolio_filtered,
+            cov,
+            max_weight=max_weight,
+            max_weights=per_asset_max,
+            turnover_limit=turnover_limit,
+            max_increase=max_increase,
+        )
+    except ValueError as exc:
+        st.error(f"Constraint set is infeasible: {exc}")
+        st.stop()
 
     current_w = rebalanced["weight"].values
     proposed_w = rebalanced["proposed_weight"].values

@@ -10,7 +10,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from portfolio_rebalance.data import load_portfolio_csv, load_portfolio_dict
+from portfolio_rebalance.data import (
+    load_portfolio_csv,
+    load_portfolio_dict,
+    load_data,
+    download_market_caps,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -100,3 +105,74 @@ def test_load_portfolio_csv_normalises_unequal_weights(tmp_path):
     )
     port = load_portfolio_csv(csv)
     assert abs(port["weight"].sum() - 1.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# load_data
+# ---------------------------------------------------------------------------
+
+
+def test_load_data_require_full_history_drops_late_tickers(monkeypatch):
+    portfolio = pd.DataFrame(
+        {
+            "ticker": ["AAPL", "NEW"],
+            "weight": [0.6, 0.4],
+        }
+    )
+    idx = pd.date_range("2024-01-01", periods=4, freq="B")
+    prices = pd.DataFrame(
+        {
+            "AAPL": [100.0, 101.0, 102.0, 103.0],
+            "NEW": [np.nan, 50.0, 51.0, 52.0],
+        },
+        index=idx,
+    )
+
+    monkeypatch.setattr("portfolio_rebalance.data.download_prices", lambda *args, **kwargs: prices)
+
+    filtered_portfolio, filtered_prices = load_data(
+        portfolio,
+        period="3y",
+        require_full_history=True,
+    )
+
+    assert list(filtered_prices.columns) == ["AAPL"]
+    assert list(filtered_portfolio["ticker"]) == ["AAPL"]
+    assert filtered_portfolio["weight"].iloc[0] == pytest.approx(1.0)
+
+
+def test_load_data_require_full_history_raises_if_empty(monkeypatch):
+    portfolio = pd.DataFrame(
+        {
+            "ticker": ["A", "B"],
+            "weight": [0.5, 0.5],
+        }
+    )
+    idx = pd.date_range("2024-01-01", periods=3, freq="B")
+    prices = pd.DataFrame(
+        {
+            "A": [np.nan, 1.0, 1.1],
+            "B": [np.nan, 2.0, 2.1],
+        },
+        index=idx,
+    )
+
+    monkeypatch.setattr("portfolio_rebalance.data.download_prices", lambda *args, **kwargs: prices)
+
+    with pytest.raises(ValueError, match="No tickers remain"):
+        load_data(portfolio, require_full_history=True)
+
+
+def test_download_market_caps_dispatch(monkeypatch):
+    expected = pd.Series({"AAPL": 1.0, "MSFT": 2.0}, dtype=float)
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_market_caps_yfinance",
+        lambda tickers: expected,
+    )
+    out = download_market_caps(["AAPL", "MSFT"])
+    pd.testing.assert_series_equal(out, expected)
+
+
+def test_download_market_caps_unknown_backend_raises():
+    with pytest.raises(NotImplementedError):
+        download_market_caps(["AAPL"], backend="dummy")

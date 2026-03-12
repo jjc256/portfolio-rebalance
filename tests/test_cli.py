@@ -54,5 +54,37 @@ def test_parser_defaults():
     parser = _build_parser()
     args = parser.parse_args(["--holdings", "AAPL=1.0"])
     assert args.period == "3y"
+    assert args.full_history is False
     assert args.max_weight == 1.0
     assert args.turnover is None
+    assert args.max_increase is None
+    assert args.small_cap_threshold_b is None
+    assert args.small_cap_max_weight == 0.05
+
+
+def test_parser_full_history_flag():
+    parser = _build_parser()
+    args = parser.parse_args(["--holdings", "AAPL=1.0", "--full-history"])
+    assert args.full_history is True
+
+
+def test_parser_max_increase_arg():
+    parser = _build_parser()
+    args = parser.parse_args(["--holdings", "AAPL=1.0", "--max-increase", "0.05"])
+    assert args.max_increase == 0.05
+
+
+def test_parser_small_cap_args():
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--holdings",
+            "AAPL=1.0",
+            "--small-cap-threshold-b",
+            "10",
+            "--small-cap-max-weight",
+            "0.03",
+        ]
+    )
+    assert args.small_cap_threshold_b == 10
+    assert args.small_cap_max_weight == 0.03

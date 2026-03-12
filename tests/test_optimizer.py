@@ -66,6 +66,13 @@ def test_minimize_variance_max_weight_respected():
     assert np.all(w <= max_w + 1e-6)
 
 
+def test_minimize_variance_per_asset_max_weights_respected():
+    cov = _build_cov(n_assets=4)
+    per_asset_max = np.array([0.10, 0.40, 0.40, 0.40])
+    w = minimize_variance(cov, max_weights=per_asset_max)
+    assert np.all(w <= per_asset_max + 1e-6)
+
+
 def test_minimize_variance_turnover_respected():
     cov = _build_cov(n_assets=5)
     n = len(cov)
@@ -74,6 +81,27 @@ def test_minimize_variance_turnover_respected():
     w = minimize_variance(cov, current_weights=current, turnover_limit=limit)
     turnover = float(np.sum(np.abs(w - current)))
     assert turnover <= limit + 1e-6
+
+
+def test_minimize_variance_max_increase_respected():
+    cov = _build_cov(n_assets=5)
+    n = len(cov)
+    current = np.full(n, 1.0 / n)
+    max_increase = 0.03
+    w = minimize_variance(cov, current_weights=current, max_increase=max_increase)
+    assert np.all(w <= current + max_increase + 1e-6)
+
+
+def test_minimize_variance_infeasible_upper_bounds_raises():
+    cov = _build_cov(n_assets=5)
+    current = np.full(5, 0.20)
+    with pytest.raises(ValueError, match="Infeasible constraints"):
+        minimize_variance(
+            cov,
+            current_weights=current,
+            max_weight=0.10,
+            max_increase=0.0,
+        )
 
 
 def test_minimize_variance_two_assets():

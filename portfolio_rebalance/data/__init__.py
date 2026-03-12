@@ -98,6 +98,23 @@ def download_prices(
     raise NotImplementedError(f"Backend '{backend}' is not implemented.")
 
 
+def download_market_caps(
+    tickers: List[str],
+    backend: str = "yfinance",
+) -> pd.Series:
+    """Download market capitalisation by ticker.
+
+    Returns
+    -------
+    pd.Series
+        Series indexed by ticker with market caps in USD. Missing/unavailable
+        values are returned as ``NaN``.
+    """
+    if backend == "yfinance":
+        return _download_market_caps_yfinance(tickers)
+    raise NotImplementedError(f"Backend '{backend}' is not implemented.")
+
+
 def _download_yfinance(
     tickers: List[str],
     period: str = "3y",
@@ -132,6 +149,36 @@ def _download_yfinance(
     return prices[available]
 
 
+def _download_market_caps_yfinance(tickers: List[str]) -> pd.Series:
+    """Download market caps via yfinance ticker metadata."""
+    import yfinance as yf
+
+    caps: dict[str, float] = {}
+    for ticker in tickers:
+        cap_value = np.nan
+        try:
+            tk = yf.Ticker(ticker)
+
+            fast_info = getattr(tk, "fast_info", None)
+            if fast_info is not None:
+                cap_fast = fast_info.get("market_cap")
+                if cap_fast is not None and cap_fast > 0:
+                    cap_value = float(cap_fast)
+
+            if np.isnan(cap_value):
+                info = getattr(tk, "info", None)
+                if isinstance(info, dict):
+                    cap_info = info.get("marketCap")
+                    if cap_info is not None and cap_info > 0:
+                        cap_value = float(cap_info)
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not fetch market cap for %s", ticker)
+
+        caps[ticker] = cap_value
+
+    return pd.Series(caps, dtype=float)
+
+
 # ---------------------------------------------------------------------------
 # Convenience: load portfolio + prices in one call
 # ---------------------------------------------------------------------------
@@ -141,18 +188,55 @@ def load_data(
     portfolio: pd.DataFrame,
     period: str = "3y",
     backend: str = "yfinance",
+    require_full_history: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Return ``(portfolio_df, prices_df)`` ready for the risk model.
 
     Filters the portfolio to only tickers for which price data could be
     downloaded.
+
+    Parameters
+    ----------
+    require_full_history:
+        When ``True``, keep only tickers with complete price history over the
+        selected lookback period.  This preserves the full timeline in the
+        multi-asset return matrix at the cost of dropping newer listings.
     """
     tickers = portfolio["ticker"].tolist()
     prices = download_prices(tickers, period=period, backend=backend)
 
-    # Filter portfolio to available tickers and re-normalise
+    if prices.empty:
+        raise ValueError("No price data downloaded for the provided tickers.")
+
     available = prices.columns.tolist()
+    if not available:
+        raise ValueError("No requested tickers had downloadable price data.")
+
+    if require_full_history:
+        full_history_mask = prices.notna().all(axis=0)
+        full_history_tickers = prices.columns[full_history_mask].tolist()
+        dropped = sorted(set(available) - set(full_history_tickers))
+        if dropped:
+            logger.warning(
+                "Dropping %d ticker(s) without full %s history: %s",
+                len(dropped),
+                period,
+                ", ".join(dropped),
+            )
+        prices = prices[full_history_tickers]
+        available = full_history_tickers
+
+    if not available:
+        raise ValueError(
+            "No tickers remain after applying history filters. "
+            "Try a shorter period or disable full-history mode."
+        )
+
+    # Filter portfolio to available tickers and re-normalise
     portfolio_filt = portfolio[portfolio["ticker"].isin(available)].copy()
+    if portfolio_filt.empty:
+        raise ValueError("No portfolio tickers remain after data filtering.")
+
     portfolio_filt["weight"] = (
         portfolio_filt["weight"] / portfolio_filt["weight"].sum()
     )

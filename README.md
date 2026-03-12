@@ -11,7 +11,7 @@ Given a set of stocks and their current weights, it downloads historical prices,
 |---|---|
 | `data` | Load holdings from CSV / dict; download adjusted prices via yfinance (swap-able to any paid API) |
 | `risk` | Compute log/simple returns, sample (or Ledoit-Wolf shrinkage) covariance matrix, annualised stats |
-| `optimizer` | Long-only, budget-constrained minimum-variance optimisation (SLSQP); optional max-position and turnover limits |
+| `optimizer` | Long-only, budget-constrained minimum-variance optimisation (SLSQP); optional max-position, turnover, per-position increase, and market-cap-aware limits |
 | `reporting` | Weights table, performance stats summary, Plotly charts |
 | `ui/dashboard` | Streamlit web app with interactive controls |
 | `cli` | Argparse-based CLI |
@@ -39,6 +39,12 @@ portfolio-rebalance --holdings AAPL=0.4 MSFT=0.3 GOOGL=0.3
 
 # With constraints: max 25 % per stock, max 50 % one-way turnover
 portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5
+
+# Keep small speculative positions from scaling too quickly
+portfolio-rebalance --csv sample_portfolio.csv --max-increase 0.05
+
+# Cap smaller-cap names (below $10B) at 3% each
+portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03
 
 # 5-year lookback, Ledoit-Wolf covariance shrinkage
 portfolio-rebalance --csv sample_portfolio.csv --period 5y --cov-method ledoit_wolf
@@ -80,6 +86,8 @@ The sidebar lets you:
 - Upload a CSV, use the bundled sample portfolio, or enter holdings manually
 - Choose a lookback period (1 y – 5 y)
 - Set a max-position limit
+- Cap how much each ticker can increase versus its current weight
+- Add a market-cap-aware cap for smaller companies
 - Enable/disable a one-way turnover constraint
 - Enable out-of-sample evaluation and choose a held-out evaluation window
 
