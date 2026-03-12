@@ -26,6 +26,7 @@ from portfolio_rebalance.data import (
     load_data,
     download_market_caps,
     download_prices,
+    download_treasury_risk_free_rate,
 )
 from portfolio_rebalance.risk import (
     compute_returns,
@@ -130,16 +131,36 @@ with st.sidebar:
     )
 
     risk_free_rate = 0.0
+    risk_free_source = "manual"
+    risk_free_tenor = "3m"
     if objective == "max_sharpe":
-        risk_free_rate_pct = st.number_input(
-            "Risk-free rate (annual %)",
-            min_value=-5.0,
-            max_value=20.0,
-            value=0.0,
-            step=0.1,
-            format="%.2f",
+        risk_free_source_label = st.radio(
+            "Risk-free source",
+            ["Manual input", "Live U.S. Treasury"],
+            index=0,
+            help=(
+                "Manual input uses a fixed annual rate. Live U.S. Treasury fetches "
+                "the latest official daily yield online at run time."
+            ),
         )
-        risk_free_rate = risk_free_rate_pct / 100.0
+        if risk_free_source_label == "Manual input":
+            risk_free_rate_pct = st.number_input(
+                "Risk-free rate (annual %)",
+                min_value=-5.0,
+                max_value=20.0,
+                value=0.0,
+                step=0.1,
+                format="%.2f",
+            )
+            risk_free_rate = risk_free_rate_pct / 100.0
+        else:
+            risk_free_source = "treasury"
+            risk_free_tenor = st.selectbox(
+                "Treasury tenor",
+                ["1m", "2m", "3m", "6m", "1y", "2y", "5y", "10y", "30y"],
+                index=2,
+                help="Rate is the latest available Treasury daily yield for this tenor.",
+            )
 
     require_full_history = st.checkbox(
         "Preserve full lookback (drop late-start tickers)",
@@ -386,6 +407,23 @@ if run and portfolio_df is not None:
             )
 
     try:
+        effective_risk_free_rate = risk_free_rate
+        if objective == "max_sharpe" and risk_free_source == "treasury":
+            try:
+                effective_risk_free_rate, quote_date = download_treasury_risk_free_rate(
+                    tenor=risk_free_tenor
+                )
+                st.info(
+                    "Using live Treasury risk-free rate "
+                    f"({risk_free_tenor}): {effective_risk_free_rate:.2%} "
+                    f"as of {quote_date.date()}."
+                )
+            except Exception as exc:  # noqa: BLE001
+                st.warning(
+                    "Treasury risk-free fetch failed "
+                    f"({exc}). Falling back to manual rate {risk_free_rate:.2%}."
+                )
+
         rebalanced = rebalance(
             portfolio_filtered,
             cov,
@@ -395,7 +433,7 @@ if run and portfolio_df is not None:
             max_increase=max_increase,
             objective=objective,
             expected_returns=expected_returns,
-            risk_free_rate=risk_free_rate,
+            risk_free_rate=effective_risk_free_rate,
         )
     except ValueError as exc:
         st.error(f"Constraint set is infeasible: {exc}")

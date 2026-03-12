@@ -55,6 +55,9 @@ portfolio-rebalance --csv sample_portfolio.csv --eval-frac 0.2
 # Benchmark comparison (default is S&P 500 via ^GSPC)
 portfolio-rebalance --csv sample_portfolio.csv --benchmark ^GSPC
 
+# Pull live risk-free rate from U.S. Treasury (latest 3M yield)
+portfolio-rebalance --csv sample_portfolio.csv --risk-free-source treasury --risk-free-tenor 3m
+
 # OOS + constraints
 portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5 --eval-frac 0.2
 ```
@@ -88,6 +91,7 @@ Open `http://localhost:8501` in your browser.
 The sidebar lets you:
 - Upload a CSV, use the bundled sample portfolio, or enter holdings manually
 - Choose a lookback period (1 y – 5 y)
+- Choose manual or live U.S. Treasury risk-free rate (for Sharpe objective)
 - Set a max-position limit
 - Cap how much each ticker can increase versus its current weight
 - Add a market-cap-aware cap for smaller companies

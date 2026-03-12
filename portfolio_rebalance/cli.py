@@ -20,6 +20,9 @@ portfolio-rebalance --csv sample_portfolio.csv --objective min_variance
 # Sharpe objective with a 3 % annual risk-free rate
 portfolio-rebalance --csv sample_portfolio.csv --risk-free-rate 0.03
 
+# Use latest 3-month U.S. Treasury yield for risk-free rate
+portfolio-rebalance --csv sample_portfolio.csv --risk-free-source treasury --risk-free-tenor 3m
+
 # Cap sub-10B market-cap names at 3 % each
 portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03
 
@@ -41,6 +44,8 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+RISK_FREE_TENORS = ["1m", "2m", "3m", "6m", "1y", "2y", "5y", "10y", "30y"]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -151,6 +156,25 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--risk-free-source",
+        choices=["manual", "treasury"],
+        default="manual",
+        help=(
+            "Source for risk-free rate when objective=max_sharpe. "
+            "'manual' uses --risk-free-rate; 'treasury' fetches latest "
+            "U.S. Treasury yield online (default: manual)."
+        ),
+    )
+    parser.add_argument(
+        "--risk-free-tenor",
+        choices=RISK_FREE_TENORS,
+        default="3m",
+        help=(
+            "Treasury tenor used when --risk-free-source=treasury "
+            f"(default: 3m; choices: {', '.join(RISK_FREE_TENORS)})."
+        ),
+    )
+    parser.add_argument(
         "--eval-frac",
         type=float,
         default=None,
@@ -226,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         load_data,
         download_market_caps,
         download_prices,
+        download_treasury_risk_free_rate,
     )
     from portfolio_rebalance.risk import (
         compute_returns,
@@ -322,9 +347,27 @@ def main(argv: list[str] | None = None) -> int:
     objective_label = (
         "Max Sharpe" if args.objective == "max_sharpe" else "Minimum Variance"
     )
+
+    effective_risk_free_rate = args.risk_free_rate
+    if args.objective == "max_sharpe" and args.risk_free_source == "treasury":
+        try:
+            effective_risk_free_rate, quote_date = download_treasury_risk_free_rate(
+                tenor=args.risk_free_tenor
+            )
+            print(
+                "Fetched Treasury risk-free rate "
+                f"({args.risk_free_tenor}): {effective_risk_free_rate:.2%} "
+                f"as of {quote_date.date()}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                "Warning: Treasury risk-free fetch failed "
+                f"({exc}). Using --risk-free-rate={args.risk_free_rate:.2%}."
+            )
+
     if args.objective == "max_sharpe":
         print(
-            f"Objective: {objective_label} (risk-free rate={args.risk_free_rate:.2%})"
+            f"Objective: {objective_label} (risk-free rate={effective_risk_free_rate:.2%})"
         )
     else:
         print(f"Objective: {objective_label}")
@@ -405,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
             max_increase=args.max_increase,
             objective=args.objective,
             expected_returns=expected_returns,
-            risk_free_rate=args.risk_free_rate,
+            risk_free_rate=effective_risk_free_rate,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

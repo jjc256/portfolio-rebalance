@@ -6,14 +6,29 @@ Designed so the download backend can be swapped to a paid API with minimal chang
 
 from __future__ import annotations
 
+import io
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.request import urlopen
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+TREASURY_TENOR_COLUMNS: dict[str, str] = {
+    "1m": "1 Mo",
+    "2m": "2 Mo",
+    "3m": "3 Mo",
+    "6m": "6 Mo",
+    "1y": "1 Yr",
+    "2y": "2 Yr",
+    "5y": "5 Yr",
+    "10y": "10 Yr",
+    "30y": "30 Yr",
+}
 
 # ---------------------------------------------------------------------------
 # Portfolio loading helpers
@@ -113,6 +128,97 @@ def download_market_caps(
     if backend == "yfinance":
         return _download_market_caps_yfinance(tickers)
     raise NotImplementedError(f"Backend '{backend}' is not implemented.")
+
+
+def download_treasury_risk_free_rate(
+    tenor: str = "3m",
+    year: int | None = None,
+    timeout: float = 20.0,
+) -> tuple[float, pd.Timestamp]:
+    """Fetch latest U.S. Treasury yield for *tenor* as a decimal annual rate.
+
+    Parameters
+    ----------
+    tenor:
+        Tenor alias, one of: ``1m``, ``2m``, ``3m``, ``6m``, ``1y``, ``2y``,
+        ``5y``, ``10y``, ``30y``.
+    year:
+        Treasury data year to query. When omitted, current year is tried first
+        and previous year is used as a fallback (useful around year boundaries).
+    timeout:
+        HTTP timeout in seconds.
+
+    Returns
+    -------
+    tuple[float, pd.Timestamp]
+        ``(annual_rate_decimal, quote_date)`` where rate is in decimal form,
+        e.g. ``0.0371`` for ``3.71%``.
+    """
+    tenor_key = tenor.strip().lower()
+    if tenor_key not in TREASURY_TENOR_COLUMNS:
+        supported = ", ".join(sorted(TREASURY_TENOR_COLUMNS))
+        raise ValueError(f"Unsupported Treasury tenor '{tenor}'. Choose one of: {supported}.")
+
+    target_column = TREASURY_TENOR_COLUMNS[tenor_key]
+    current_year = year or datetime.utcnow().year
+    years_to_try = [current_year] if year is not None else [current_year, current_year - 1]
+
+    errors: list[str] = []
+    for year_value in years_to_try:
+        try:
+            df = _download_treasury_yield_curve_csv(year_value, timeout=timeout)
+            parsed = _extract_latest_treasury_yield(df, column_name=target_column)
+            if parsed is not None:
+                return parsed
+            errors.append(f"{year_value}: no valid '{target_column}' observations")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Treasury risk-free download failed for %s: %s",
+                year_value,
+                exc,
+            )
+            errors.append(f"{year_value}: {exc}")
+
+    detail = "; ".join(errors) if errors else "no response"
+    raise ValueError(
+        f"Unable to fetch Treasury risk-free rate for tenor '{tenor_key}' ({detail})."
+    )
+
+
+def _download_treasury_yield_curve_csv(year: int, timeout: float = 20.0) -> pd.DataFrame:
+    """Download a year of Treasury daily yield-curve data as a DataFrame."""
+    url = (
+        "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+        f"daily-treasury-rates.csv/{year}/all"
+        "?type=daily_treasury_yield_curve"
+        f"&field_tdr_date_value={year}&page&_format=csv"
+    )
+    with urlopen(url, timeout=timeout) as response:  # noqa: S310
+        payload = response.read().decode("utf-8")
+    return pd.read_csv(io.StringIO(payload), engine="python")
+
+
+def _extract_latest_treasury_yield(
+    df: pd.DataFrame,
+    column_name: str,
+) -> tuple[float, pd.Timestamp] | None:
+    """Return latest valid Treasury yield from *column_name* in decimal form."""
+    if "Date" not in df.columns:
+        raise ValueError("Treasury CSV missing 'Date' column.")
+    if column_name not in df.columns:
+        raise ValueError(f"Treasury CSV missing '{column_name}' column.")
+
+    parsed = pd.DataFrame(
+        {
+            "date": pd.to_datetime(df["Date"], errors="coerce", format="%m/%d/%Y"),
+            "yield_pct": pd.to_numeric(df[column_name], errors="coerce"),
+        }
+    ).dropna()
+    if parsed.empty:
+        return None
+
+    latest = parsed.sort_values("date").iloc[-1]
+    return float(latest["yield_pct"]) / 100.0, pd.Timestamp(latest["date"])
 
 
 def _download_yfinance(

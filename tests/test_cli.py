@@ -60,6 +60,8 @@ def test_parser_defaults():
     assert args.max_increase is None
     assert args.objective == "max_sharpe"
     assert args.risk_free_rate == 0.0
+    assert args.risk_free_source == "manual"
+    assert args.risk_free_tenor == "3m"
     assert args.small_cap_threshold_b is None
     assert args.small_cap_max_weight == 0.05
     assert args.benchmark == "^GSPC"
@@ -109,3 +111,19 @@ def test_parser_risk_free_rate_arg():
     parser = _build_parser()
     args = parser.parse_args(["--holdings", "AAPL=1.0", "--risk-free-rate", "0.03"])
     assert args.risk_free_rate == 0.03
+
+
+def test_parser_risk_free_treasury_args():
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--holdings",
+            "AAPL=1.0",
+            "--risk-free-source",
+            "treasury",
+            "--risk-free-tenor",
+            "10y",
+        ]
+    )
+    assert args.risk_free_source == "treasury"
+    assert args.risk_free_tenor == "10y"

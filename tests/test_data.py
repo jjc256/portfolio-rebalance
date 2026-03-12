@@ -15,6 +15,7 @@ from portfolio_rebalance.data import (
     load_portfolio_dict,
     load_data,
     download_market_caps,
+    download_treasury_risk_free_rate,
 )
 
 
@@ -176,3 +177,42 @@ def test_download_market_caps_dispatch(monkeypatch):
 def test_download_market_caps_unknown_backend_raises():
     with pytest.raises(NotImplementedError):
         download_market_caps(["AAPL"], backend="dummy")
+
+
+def test_download_treasury_risk_free_rate_latest(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "Date": ["03/10/2026", "03/11/2026"],
+            "3 Mo": [3.70, 3.71],
+        }
+    )
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_treasury_yield_curve_csv",
+        lambda year, timeout=10.0: df,
+    )
+
+    rate, quote_date = download_treasury_risk_free_rate(tenor="3m", year=2026)
+
+    assert rate == pytest.approx(0.0371)
+    assert quote_date == pd.Timestamp("2026-03-11")
+
+
+def test_download_treasury_risk_free_rate_invalid_tenor():
+    with pytest.raises(ValueError, match="Unsupported Treasury tenor"):
+        download_treasury_risk_free_rate(tenor="9m", year=2026)
+
+
+def test_download_treasury_risk_free_rate_missing_column(monkeypatch):
+    df = pd.DataFrame(
+        {
+            "Date": ["03/11/2026"],
+            "10 Yr": [4.21],
+        }
+    )
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_treasury_yield_curve_csv",
+        lambda year, timeout=10.0: df,
+    )
+
+    with pytest.raises(ValueError, match="Unable to fetch Treasury risk-free rate"):
+        download_treasury_risk_free_rate(tenor="3m", year=2026)
