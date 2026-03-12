@@ -58,6 +58,8 @@ def test_parser_defaults():
     assert args.max_weight == 1.0
     assert args.turnover is None
     assert args.max_increase is None
+    assert args.objective == "max_sharpe"
+    assert args.risk_free_rate == 0.0
     assert args.small_cap_threshold_b is None
     assert args.small_cap_max_weight == 0.05
     assert args.benchmark == "^GSPC"
@@ -95,3 +97,15 @@ def test_parser_benchmark_arg():
     parser = _build_parser()
     args = parser.parse_args(["--holdings", "AAPL=1.0", "--benchmark", "SPY"])
     assert args.benchmark == "SPY"
+
+
+def test_parser_objective_arg():
+    parser = _build_parser()
+    args = parser.parse_args(["--holdings", "AAPL=1.0", "--objective", "min_variance"])
+    assert args.objective == "min_variance"
+
+
+def test_parser_risk_free_rate_arg():
+    parser = _build_parser()
+    args = parser.parse_args(["--holdings", "AAPL=1.0", "--risk-free-rate", "0.03"])
+    assert args.risk_free_rate == 0.03

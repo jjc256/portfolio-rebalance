@@ -14,6 +14,12 @@ portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5
 # Keep speculative positions from scaling too quickly
 portfolio-rebalance --csv sample_portfolio.csv --max-increase 0.05
 
+# Explicit objective selection
+portfolio-rebalance --csv sample_portfolio.csv --objective min_variance
+
+# Sharpe objective with a 3 % annual risk-free rate
+portfolio-rebalance --csv sample_portfolio.csv --risk-free-rate 0.03
+
 # Cap sub-10B market-cap names at 3 % each
 portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03
 
@@ -40,7 +46,7 @@ logger = logging.getLogger(__name__)
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="portfolio-rebalance",
-        description="Minimum-variance portfolio rebalancer",
+        description="Sharpe-maximizing portfolio rebalancer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -126,6 +132,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Covariance estimation method (default: sample).",
     )
     parser.add_argument(
+        "--objective",
+        choices=["max_sharpe", "min_variance"],
+        default="max_sharpe",
+        help=(
+            "Optimisation objective (default: max_sharpe). "
+            "Use min_variance to prioritise volatility reduction only."
+        ),
+    )
+    parser.add_argument(
+        "--risk-free-rate",
+        type=float,
+        default=0.0,
+        metavar="R",
+        help=(
+            "Annual risk-free rate used by max_sharpe (decimal form, e.g. 0.03). "
+            "Default: 0.0"
+        ),
+    )
+    parser.add_argument(
         "--eval-frac",
         type=float,
         default=None,
@@ -188,6 +213,9 @@ def main(argv: list[str] | None = None) -> int:
     if not 0.0 < args.small_cap_max_weight <= 1.0:
         print("ERROR: --small-cap-max-weight must be in (0, 1].", file=sys.stderr)
         return 1
+    if not -1.0 < args.risk_free_rate < 1.0:
+        print("ERROR: --risk-free-rate must be in (-1, 1).", file=sys.stderr)
+        return 1
 
     # ------------------------------------------------------------------
     # 1. Load portfolio
@@ -204,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         compute_covariance,
         portfolio_volatility,
         split_returns,
+        TRADING_DAYS,
     )
     from portfolio_rebalance.optimizer import rebalance
     from portfolio_rebalance.reporting import weights_table, stats_summary
@@ -288,6 +317,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     cov = compute_covariance(est_returns, annualise=True, method=args.cov_method)
+    expected_returns = est_returns.mean() * TRADING_DAYS
+
+    objective_label = (
+        "Max Sharpe" if args.objective == "max_sharpe" else "Minimum Variance"
+    )
+    if args.objective == "max_sharpe":
+        print(
+            f"Objective: {objective_label} (risk-free rate={args.risk_free_rate:.2%})"
+        )
+    else:
+        print(f"Objective: {objective_label}")
 
     benchmark_returns: pd.Series | None = None
     benchmark_eval_returns: pd.Series | None = None
@@ -363,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
             max_weights=per_asset_max,
             turnover_limit=args.turnover,
             max_increase=args.max_increase,
+            objective=args.objective,
+            expected_returns=expected_returns,
+            risk_free_rate=args.risk_free_rate,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

@@ -32,6 +32,7 @@ from portfolio_rebalance.risk import (
     compute_covariance,
     portfolio_volatility,
     split_returns,
+    TRADING_DAYS,
 )
 from portfolio_rebalance.optimizer import rebalance
 from portfolio_rebalance.reporting import (
@@ -53,7 +54,7 @@ st.set_page_config(
 )
 
 st.title("📊 Portfolio Rebalancer")
-st.caption("Minimum-variance optimisation · Long-only · Free data (yfinance)")
+st.caption("Sharpe-first optimisation · Long-only · Free data (yfinance)")
 
 # ---------------------------------------------------------------------------
 # Sidebar – inputs & settings
@@ -115,6 +116,31 @@ with st.sidebar:
         ["1y", "2y", "3y", "5y"],
         index=2,
     )
+    objective_label = st.selectbox(
+        "Optimization objective",
+        ["Maximize Sharpe ratio", "Minimize volatility"],
+        index=0,
+        help=(
+            "Sharpe balances return and risk. Minimize volatility ignores expected "
+            "returns and optimizes risk only."
+        ),
+    )
+    objective = (
+        "max_sharpe" if objective_label == "Maximize Sharpe ratio" else "min_variance"
+    )
+
+    risk_free_rate = 0.0
+    if objective == "max_sharpe":
+        risk_free_rate_pct = st.number_input(
+            "Risk-free rate (annual %)",
+            min_value=-5.0,
+            max_value=20.0,
+            value=0.0,
+            step=0.1,
+            format="%.2f",
+        )
+        risk_free_rate = risk_free_rate_pct / 100.0
+
     require_full_history = st.checkbox(
         "Preserve full lookback (drop late-start tickers)",
         value=False,
@@ -305,6 +331,7 @@ if run and portfolio_df is not None:
         est_returns = returns
 
     cov = compute_covariance(est_returns, annualise=True)
+    expected_returns = est_returns.mean() * TRADING_DAYS
 
     benchmark_returns: pd.Series | None = None
     benchmark_eval_returns: pd.Series | None = None
@@ -366,6 +393,9 @@ if run and portfolio_df is not None:
             max_weights=per_asset_max,
             turnover_limit=turnover_limit,
             max_increase=max_increase,
+            objective=objective,
+            expected_returns=expected_returns,
+            risk_free_rate=risk_free_rate,
         )
     except ValueError as exc:
         st.error(f"Constraint set is infeasible: {exc}")

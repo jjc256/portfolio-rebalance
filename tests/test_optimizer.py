@@ -6,8 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from portfolio_rebalance.risk import compute_returns, compute_covariance, portfolio_volatility
-from portfolio_rebalance.optimizer import minimize_variance, rebalance
+from portfolio_rebalance.risk import (
+    compute_returns,
+    compute_covariance,
+    portfolio_volatility,
+    TRADING_DAYS,
+)
+from portfolio_rebalance.optimizer import minimize_variance, maximize_sharpe, rebalance
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +33,14 @@ def _build_cov(n_assets: int = 5, seed: int = 7) -> pd.DataFrame:
     prices = _random_prices(n_assets=n_assets, seed=seed)
     ret = compute_returns(prices)
     return compute_covariance(ret)
+
+
+def _build_cov_and_mu(n_assets: int = 5, seed: int = 7) -> tuple[pd.DataFrame, np.ndarray]:
+    prices = _random_prices(n_assets=n_assets, seed=seed)
+    ret = compute_returns(prices)
+    cov = compute_covariance(ret)
+    mu = (ret.mean() * TRADING_DAYS).values
+    return cov, mu
 
 
 # ---------------------------------------------------------------------------
@@ -126,15 +139,71 @@ def test_minimize_variance_two_assets():
 # ---------------------------------------------------------------------------
 
 
+def test_maximize_sharpe_weights_sum_to_one():
+    cov, mu = _build_cov_and_mu(n_assets=5)
+    w = maximize_sharpe(cov, expected_returns=mu)
+    assert abs(w.sum() - 1.0) < 1e-6
+
+
+def test_maximize_sharpe_long_only():
+    cov, mu = _build_cov_and_mu(n_assets=5)
+    w = maximize_sharpe(cov, expected_returns=mu)
+    assert np.all(w >= -1e-9)
+
+
+def test_maximize_sharpe_max_weight_respected():
+    cov, mu = _build_cov_and_mu(n_assets=5)
+    max_w = 0.30
+    w = maximize_sharpe(cov, expected_returns=mu, max_weight=max_w)
+    assert np.all(w <= max_w + 1e-6)
+
+
+def test_maximize_sharpe_turnover_respected():
+    cov, mu = _build_cov_and_mu(n_assets=5)
+    current = np.full(5, 0.20)
+    limit = 0.20
+    w = maximize_sharpe(cov, expected_returns=mu, current_weights=current, turnover_limit=limit)
+    turnover = float(np.sum(np.abs(w - current)))
+    assert turnover <= limit + 1e-6
+
+
+def test_maximize_sharpe_max_increase_respected():
+    cov, mu = _build_cov_and_mu(n_assets=5)
+    current = np.full(5, 0.20)
+    max_increase = 0.03
+    w = maximize_sharpe(cov, expected_returns=mu, current_weights=current, max_increase=max_increase)
+    assert np.all(w <= current + max_increase + 1e-6)
+
+
+def test_maximize_sharpe_outperforms_min_variance_sharpe():
+    cov = pd.DataFrame(
+        [[0.04, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.0225]],
+        index=["A", "B", "C"],
+        columns=["A", "B", "C"],
+    )
+    mu = np.array([0.14, 0.05, 0.09])
+
+    w_mv = minimize_variance(cov)
+    w_ms = maximize_sharpe(cov, expected_returns=mu)
+
+    def sharpe(w: np.ndarray) -> float:
+        ann_ret = float(w @ mu)
+        ann_vol = float(np.sqrt(max(w @ cov.values @ w, 0.0)))
+        return ann_ret / ann_vol if ann_vol > 0 else -np.inf
+
+    assert sharpe(w_ms) >= sharpe(w_mv) - 1e-8
+
+
 def test_rebalance_returns_dataframe():
     prices = _random_prices()
     ret = compute_returns(prices)
     cov = compute_covariance(ret)
+    exp_ret = ret.mean() * TRADING_DAYS
     n = len(cov)
     portfolio = pd.DataFrame(
         {"ticker": cov.columns.tolist(), "weight": np.full(n, 1.0 / n)}
     )
-    result = rebalance(portfolio, cov)
+    result = rebalance(portfolio, cov, expected_returns=exp_ret)
     assert "proposed_weight" in result.columns
     assert abs(result["proposed_weight"].sum() - 1.0) < 1e-6
 
@@ -143,10 +212,30 @@ def test_rebalance_max_weight_column():
     prices = _random_prices()
     ret = compute_returns(prices)
     cov = compute_covariance(ret)
+    exp_ret = ret.mean() * TRADING_DAYS
     n = len(cov)
     portfolio = pd.DataFrame(
         {"ticker": cov.columns.tolist(), "weight": np.full(n, 1.0 / n)}
     )
     max_w = 0.25
-    result = rebalance(portfolio, cov, max_weight=max_w)
+    result = rebalance(portfolio, cov, max_weight=max_w, expected_returns=exp_ret)
     assert np.all(result["proposed_weight"].values <= max_w + 1e-6)
+
+
+def test_rebalance_default_max_sharpe_requires_expected_returns():
+    cov = _build_cov(n_assets=4)
+    portfolio = pd.DataFrame(
+        {"ticker": cov.columns.tolist(), "weight": np.full(4, 0.25)}
+    )
+    with pytest.raises(ValueError, match="expected_returns"):
+        rebalance(portfolio, cov)
+
+
+def test_rebalance_min_variance_without_expected_returns():
+    cov = _build_cov(n_assets=4)
+    portfolio = pd.DataFrame(
+        {"ticker": cov.columns.tolist(), "weight": np.full(4, 0.25)}
+    )
+    result = rebalance(portfolio, cov, objective="min_variance")
+    assert "proposed_weight" in result.columns
+    assert abs(result["proposed_weight"].sum() - 1.0) < 1e-6
