@@ -105,6 +105,26 @@ def test_minimize_variance_max_increase_respected():
     assert np.all(w <= current + max_increase + 1e-6)
 
 
+def test_minimize_variance_distance_penalty_keeps_weights_closer():
+    cov = pd.DataFrame(
+        [[0.25, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]],
+        index=["A", "B", "C"],
+        columns=["A", "B", "C"],
+    )
+    current = np.array([0.80, 0.10, 0.10])
+
+    w_no_penalty = minimize_variance(cov, current_weights=current)
+    w_penalty = minimize_variance(
+        cov,
+        current_weights=current,
+        distance_penalty=1.0,
+    )
+
+    dist_no_penalty = float(np.linalg.norm(w_no_penalty - current))
+    dist_penalty = float(np.linalg.norm(w_penalty - current))
+    assert dist_penalty <= dist_no_penalty + 1e-8
+
+
 def test_minimize_variance_infeasible_upper_bounds_raises():
     cov = _build_cov(n_assets=5)
     current = np.full(5, 0.20)
@@ -175,6 +195,34 @@ def test_maximize_sharpe_max_increase_respected():
     assert np.all(w <= current + max_increase + 1e-6)
 
 
+def test_maximize_sharpe_distance_penalty_keeps_weights_closer():
+    cov = pd.DataFrame(
+        [[0.04, 0.0, 0.0], [0.0, 0.04, 0.0], [0.0, 0.0, 0.04]],
+        index=["A", "B", "C"],
+        columns=["A", "B", "C"],
+    )
+    mu = np.array([0.02, 0.20, 0.20])
+    current = np.array([0.80, 0.10, 0.10])
+
+    w_no_penalty = maximize_sharpe(cov, expected_returns=mu, current_weights=current)
+    w_penalty = maximize_sharpe(
+        cov,
+        expected_returns=mu,
+        current_weights=current,
+        distance_penalty=1.0,
+    )
+
+    dist_no_penalty = float(np.linalg.norm(w_no_penalty - current))
+    dist_penalty = float(np.linalg.norm(w_penalty - current))
+    assert dist_penalty <= dist_no_penalty + 1e-8
+
+
+def test_distance_penalty_negative_raises():
+    cov = _build_cov(n_assets=4)
+    with pytest.raises(ValueError, match="distance_penalty"):
+        minimize_variance(cov, distance_penalty=-0.1)
+
+
 def test_maximize_sharpe_outperforms_min_variance_sharpe():
     cov = pd.DataFrame(
         [[0.04, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.0225]],
@@ -239,3 +287,34 @@ def test_rebalance_min_variance_without_expected_returns():
     result = rebalance(portfolio, cov, objective="min_variance")
     assert "proposed_weight" in result.columns
     assert abs(result["proposed_weight"].sum() - 1.0) < 1e-6
+
+
+def test_rebalance_distance_penalty_keeps_weights_closer():
+    portfolio = pd.DataFrame(
+        {
+            "ticker": ["A", "B", "C"],
+            "weight": [0.80, 0.10, 0.10],
+        }
+    )
+    cov = pd.DataFrame(
+        [[0.25, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]],
+        index=["A", "B", "C"],
+        columns=["A", "B", "C"],
+    )
+
+    result_no_penalty = rebalance(portfolio, cov, objective="min_variance")
+    result_penalty = rebalance(
+        portfolio,
+        cov,
+        objective="min_variance",
+        distance_penalty=1.0,
+    )
+
+    current = portfolio["weight"].to_numpy(dtype=float)
+    dist_no_penalty = float(
+        np.linalg.norm(result_no_penalty["proposed_weight"].to_numpy(dtype=float) - current)
+    )
+    dist_penalty = float(
+        np.linalg.norm(result_penalty["proposed_weight"].to_numpy(dtype=float) - current)
+    )
+    assert dist_penalty <= dist_no_penalty + 1e-8

@@ -11,7 +11,7 @@ Given a set of stocks and their current weights, it downloads historical prices,
 |---|---|
 | `data` | Load holdings from CSV / dict; download adjusted prices via yfinance (swap-able to any paid API) |
 | `risk` | Compute log/simple returns, sample (or Ledoit-Wolf shrinkage) covariance matrix, annualised stats |
-| `optimizer` | Long-only, budget-constrained minimum-variance optimisation (SLSQP); optional max-position, turnover, per-position increase, and market-cap-aware limits |
+| `optimizer` | Long-only, budget-constrained optimisation (SLSQP); optional max-position, turnover, distance penalty, per-position increase, and market-cap-aware limits |
 | `reporting` | Weights table, performance stats summary, Plotly charts, benchmark comparison |
 | `ui/dashboard` | Streamlit web app with interactive controls |
 | `cli` | Argparse-based CLI |
@@ -45,15 +45,20 @@ Common options at a glance:
 | Input | `--csv FILE` or `--holdings TICKER=VALUE ...` |
 | Data window | `--period 3y`, `--full-history` |
 | Optimisation | `--objective {max_sharpe,min_variance}`, `--cov-method {sample,ledoit_wolf}` |
+| Expected returns (Sharpe) | `--mu-method {shrinkage,ewma,sample}`, `--mu-shrinkage 0.5`, `--mu-ewm-span 60` |
 | Risk-free rate | `--risk-free-source {manual,treasury}`, `--risk-free-rate 0.03`, `--risk-free-tenor 3m` |
-| Constraints | `--max-weight 0.25`, `--turnover 0.5`, `--max-increase 0.05`, `--small-cap-threshold-b 10`, `--small-cap-max-weight 0.03` |
+| Constraints | `--max-weight 0.25`, `--turnover 0.5`, `--distance-penalty 5.0`, `--max-increase 0.05`, `--small-cap-threshold-b 10`, `--small-cap-max-weight 0.03` |
 | Evaluation/reporting | `--eval-frac 0.2`, `--benchmark ^GSPC`, `--verbose` |
+| Robustness test | `--random-test-n 100`, `--random-test-size 15`, `--random-test-seed 42` |
 
 Concise examples:
 
 ```bash
 # Constrained rebalance
 portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5
+
+# Softly discourage large allocation jumps
+portfolio-rebalance --csv sample_portfolio.csv --distance-penalty 5.0
 
 # Smaller-cap cap + limited scaling of existing positions
 portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03 --max-increase 0.05
@@ -63,6 +68,12 @@ portfolio-rebalance --csv sample_portfolio.csv --period 5y --cov-method ledoit_w
 
 # Sharpe objective with live U.S. Treasury risk-free rate
 portfolio-rebalance --csv sample_portfolio.csv --objective max_sharpe --risk-free-source treasury --risk-free-tenor 3m
+
+# Stabilize Sharpe optimization with shrunk expected returns
+portfolio-rebalance --csv sample_portfolio.csv --objective max_sharpe --mu-method shrinkage --mu-shrinkage 0.6
+
+# Random S&P 500 robustness test: how often Sharpe actually improves
+portfolio-rebalance --csv sample_portfolio.csv --eval-frac 0.2 --random-test-n 100 --random-test-size 15
 ```
 
 For the full option list, run:
@@ -89,6 +100,30 @@ portfolio-rebalance --csv sample_portfolio.csv --eval-frac 0.2
 This uses the first ~80% of observations to build the model and the last ~20%
 to report OOS return, Sharpe, drawdown, and realised volatility.
 
+### S&P 500 robustness snapshot
+
+One example random-universe robustness run used the following settings:
+
+- 5 y lookback
+- Maximize Sharpe
+- Live U.S. Treasury 3 m risk-free rate
+- Shrinkage mean with shrinkage = 0.5
+- Preserve full lookback
+- Max position = 100%
+- Distance penalty = 5.0
+- Market-cap risk cap: below $10B capped at 1%
+- OOS evaluation with 20% held out
+- 50 random portfolios of 15 S&P 500 stocks each
+- random seed 43
+
+Result:
+
+- 68% of sampled portfolios showed higher Sharpe after optimisation
+- Mean Sharpe improvement: +0.100
+
+Treat this as a representative experiment, not a guarantee. The exact improvement
+rate will vary with the market window, random seed, and chosen constraints.
+
 ### Launch the web dashboard
 
 ```bash
@@ -102,11 +137,13 @@ The sidebar lets you:
 - Choose a lookback period (1 y – 5 y)
 - Choose manual or live U.S. Treasury risk-free rate (for Sharpe objective)
 - Set a max-position limit
+- Add a soft distance penalty to keep weights closer to current holdings
 - Cap how much each ticker can increase versus its current weight
 - Add a market-cap-aware cap for smaller companies
 - Compare against a benchmark (default S&P 500)
 - Enable/disable a one-way turnover constraint
 - Enable out-of-sample evaluation and choose a held-out evaluation window
+- Run a random S&P 500 robustness test and see Sharpe improvement frequency
 
 After clicking **Run Optimisation** the dashboard shows:
 - KPI metrics (current vs proposed volatility, reduction %, turnover)

@@ -9,6 +9,7 @@ import pytest
 from portfolio_rebalance.risk import (
     compute_returns,
     compute_covariance,
+    estimate_expected_returns,
     portfolio_volatility,
     portfolio_stats,
     portfolio_stats_realized,
@@ -88,6 +89,59 @@ def test_compute_covariance_annualised():
     cov_daily = compute_covariance(ret, annualise=False)
     cov_ann = compute_covariance(ret, annualise=True)
     np.testing.assert_allclose(cov_ann.values, cov_daily.values * TRADING_DAYS, rtol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# estimate_expected_returns
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_expected_returns_sample_matches_mean():
+    prices = _random_prices(n_assets=3)
+    ret = compute_returns(prices)
+    mu = estimate_expected_returns(ret, method="sample", annualise=True)
+    np.testing.assert_allclose(mu.values, (ret.mean() * TRADING_DAYS).values, rtol=1e-12)
+
+
+def test_estimate_expected_returns_shrinkage_in_bounds():
+    prices = _random_prices(n_assets=4)
+    ret = compute_returns(prices)
+    sample_mu = ret.mean()
+    grand = float(sample_mu.mean())
+    mu = estimate_expected_returns(
+        ret,
+        method="shrinkage",
+        shrinkage=0.5,
+        annualise=False,
+    )
+    lower = np.minimum(sample_mu.values, grand)
+    upper = np.maximum(sample_mu.values, grand)
+    assert np.all(mu.values >= lower - 1e-12)
+    assert np.all(mu.values <= upper + 1e-12)
+
+
+def test_estimate_expected_returns_ewma_shape_and_index():
+    prices = _random_prices(n_assets=5)
+    ret = compute_returns(prices)
+    mu = estimate_expected_returns(ret, method="ewma", ewm_span=60)
+    assert list(mu.index) == list(ret.columns)
+    assert mu.shape[0] == ret.shape[1]
+
+
+def test_estimate_expected_returns_invalid_method():
+    prices = _random_prices(n_assets=3)
+    ret = compute_returns(prices)
+    with pytest.raises(ValueError, match="Unknown expected-return method"):
+        estimate_expected_returns(ret, method="bad")
+
+
+def test_estimate_expected_returns_invalid_hyperparams():
+    prices = _random_prices(n_assets=3)
+    ret = compute_returns(prices)
+    with pytest.raises(ValueError, match="shrinkage"):
+        estimate_expected_returns(ret, method="shrinkage", shrinkage=1.5)
+    with pytest.raises(ValueError, match="ewm_span"):
+        estimate_expected_returns(ret, method="ewma", ewm_span=1)
 
 
 # ---------------------------------------------------------------------------

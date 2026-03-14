@@ -10,6 +10,7 @@ Supported constraints:
     - Optional max-position  (w_i <= max_weight)
     - Optional turnover      (sum |w_new - w_old| <= turnover_limit)
     - Optional max-increase  (w_i <= w_old_i + max_increase)
+    - Optional distance penalty (+ lambda * ||w_new - w_old||^2)
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ def _optimise_weights(
     max_weights: Optional[np.ndarray] = None,
     turnover_limit: Optional[float] = None,
     max_increase: Optional[float] = None,
+    distance_penalty: float = 0.0,
     expected_returns: Optional[np.ndarray] = None,
     risk_free_rate: float = 0.0,
     tol: float = 1e-10,
@@ -49,12 +51,16 @@ def _optimise_weights(
             w_old /= w_old.sum()
         w0 = w_old.copy()
 
+    penalty = float(distance_penalty)
+    if penalty < 0.0:
+        raise ValueError("distance_penalty must be non-negative.")
+
     if objective == "min_variance":
 
-        def objective_fn(w: np.ndarray) -> float:
+        def base_objective_fn(w: np.ndarray) -> float:
             return float(w @ cov_mat @ w)
 
-        def gradient_fn(w: np.ndarray) -> np.ndarray:
+        def base_gradient_fn(w: np.ndarray) -> np.ndarray:
             return 2.0 * cov_mat @ w
 
     elif objective == "max_sharpe":
@@ -71,14 +77,14 @@ def _optimise_weights(
         rf = float(risk_free_rate)
         eps = 1e-12
 
-        def objective_fn(w: np.ndarray) -> float:
+        def base_objective_fn(w: np.ndarray) -> float:
             variance = float(w @ cov_mat @ w)
             variance = max(variance, eps)
             vol = float(np.sqrt(variance))
             excess_return = float(w @ mu) - rf
             return float(-excess_return / vol)
 
-        def gradient_fn(w: np.ndarray) -> np.ndarray:
+        def base_gradient_fn(w: np.ndarray) -> np.ndarray:
             cov_w = cov_mat @ w
             variance = float(w @ cov_w)
             variance = max(variance, eps)
@@ -90,6 +96,19 @@ def _optimise_weights(
         raise ValueError(
             f"Unknown objective '{objective}'. Use one of: {sorted(_VALID_OBJECTIVES)}"
         )
+
+    if penalty > 0.0 and w_old is not None:
+
+        def objective_fn(w: np.ndarray) -> float:
+            delta = w - w_old
+            return base_objective_fn(w) + penalty * float(delta @ delta)
+
+        def gradient_fn(w: np.ndarray) -> np.ndarray:
+            return base_gradient_fn(w) + (2.0 * penalty * (w - w_old))
+
+    else:
+        objective_fn = base_objective_fn
+        gradient_fn = base_gradient_fn
 
     upper = np.full(n, float(max_weight))
     if max_weights is not None:
@@ -158,6 +177,7 @@ def minimize_variance(
     max_weights: Optional[np.ndarray] = None,
     turnover_limit: Optional[float] = None,
     max_increase: Optional[float] = None,
+    distance_penalty: float = 0.0,
     tol: float = 1e-10,
 ) -> np.ndarray:
     """Solve the minimum-variance optimisation problem.
@@ -181,6 +201,9 @@ def minimize_variance(
         If provided (and ``current_weights`` is given), each position weight is
         capped at ``current_weight + max_increase``. This directly limits how
         much a small speculative position can grow in one rebalance.
+    distance_penalty:
+        Optional soft penalty strength for moving away from ``current_weights``.
+        Adds ``distance_penalty * ||w_new - w_old||^2`` to the objective.
     tol:
         Solver tolerance.
 
@@ -197,6 +220,7 @@ def minimize_variance(
         max_weights=max_weights,
         turnover_limit=turnover_limit,
         max_increase=max_increase,
+        distance_penalty=distance_penalty,
         tol=tol,
     )
 
@@ -209,6 +233,7 @@ def maximize_sharpe(
     max_weights: Optional[np.ndarray] = None,
     turnover_limit: Optional[float] = None,
     max_increase: Optional[float] = None,
+    distance_penalty: float = 0.0,
     risk_free_rate: float = 0.0,
     tol: float = 1e-10,
 ) -> np.ndarray:
@@ -231,6 +256,9 @@ def maximize_sharpe(
         Optional one-way turnover cap.
     max_increase:
         Optional cap on per-position increase versus current weight.
+    distance_penalty:
+        Optional soft penalty strength for moving away from ``current_weights``.
+        Adds ``distance_penalty * ||w_new - w_old||^2`` to the objective.
     risk_free_rate:
         Annual risk-free rate as a decimal (default ``0.0``).
     tol:
@@ -249,6 +277,7 @@ def maximize_sharpe(
         max_weights=max_weights,
         turnover_limit=turnover_limit,
         max_increase=max_increase,
+        distance_penalty=distance_penalty,
         expected_returns=np.asarray(expected_returns, dtype=float),
         risk_free_rate=risk_free_rate,
         tol=tol,
@@ -262,6 +291,7 @@ def rebalance(
     max_weights: Optional[pd.Series | dict | np.ndarray] = None,
     turnover_limit: Optional[float] = None,
     max_increase: Optional[float] = None,
+    distance_penalty: float = 0.0,
     objective: str = "max_sharpe",
     expected_returns: Optional[pd.Series | dict | np.ndarray] = None,
     risk_free_rate: float = 0.0,
@@ -287,6 +317,9 @@ def rebalance(
         Optional turnover constraint.
     max_increase:
         Optional cap on per-position increase versus current weight.
+    distance_penalty:
+        Optional soft penalty strength for moving away from current weights.
+        Adds ``distance_penalty * ||w_new - w_old||^2`` to the objective.
     objective:
         Optimisation objective: ``"max_sharpe"`` (default) or
         ``"min_variance"``.
@@ -363,6 +396,7 @@ def rebalance(
             max_weights=per_asset_max,
             turnover_limit=turnover_limit,
             max_increase=max_increase,
+            distance_penalty=distance_penalty,
         )
     else:
         if expected_vec is None:
@@ -378,6 +412,7 @@ def rebalance(
             max_weights=per_asset_max,
             turnover_limit=turnover_limit,
             max_increase=max_increase,
+            distance_penalty=distance_penalty,
             risk_free_rate=risk_free_rate,
         )
 

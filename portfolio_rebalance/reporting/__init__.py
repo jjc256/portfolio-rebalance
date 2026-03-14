@@ -224,13 +224,70 @@ def fig_cumulative_returns(
     current_weights, proposed_weights:
         Weight vectors.
     eval_returns:
-        Optional out-of-sample daily returns.  When provided the chart shows
-        the estimation period followed by the evaluation period, with a vertical
-        dashed line marking the boundary.  The OOS segment is shown with a
-        lighter, dashed line style to distinguish it visually.
+        Optional out-of-sample daily returns. When provided the chart shows only
+        the held-out OOS window, and each series is rebased so all lines start
+        at the same value (1.0) on the OOS cutoff date.
     """
     def _cum(ret_arr: np.ndarray, start_val: float = 1.0) -> np.ndarray:
         return start_val * np.cumprod(1.0 + ret_arr)
+
+    def _rebased_cum(ret_arr: np.ndarray) -> np.ndarray:
+        cum = _cum(ret_arr)
+        if len(cum) == 0:
+            return cum
+        return cum / float(cum[0])
+
+    oos_mode = eval_returns is not None and not eval_returns.empty
+
+    if oos_mode:
+        idx_oos = eval_returns.index
+        port_current_oos = eval_returns.values @ current_weights
+        port_proposed_oos = eval_returns.values @ proposed_weights
+        cum_current_oos = _rebased_cum(port_current_oos)
+        cum_proposed_oos = _rebased_cum(port_proposed_oos)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=idx_oos, y=cum_current_oos, name="Current (OOS)",
+            line=dict(color="#4C72B0"),
+            showlegend=True,
+        ))
+        fig.add_trace(go.Scatter(
+            x=idx_oos, y=cum_proposed_oos, name="Proposed (OOS)",
+            line=dict(color="#DD8452"),
+            showlegend=True,
+        ))
+
+        bench_oos_series = benchmark_eval_returns
+        if bench_oos_series is None and benchmark_returns is not None:
+            bench_oos_series = benchmark_returns.reindex(idx_oos)
+
+        has_benchmark_oos = bench_oos_series is not None and not bench_oos_series.empty
+        if has_benchmark_oos:
+            bench_oos = bench_oos_series.reindex(idx_oos).dropna()
+            if not bench_oos.empty:
+                cum_bench_oos = _rebased_cum(bench_oos.values)
+                fig.add_trace(go.Scatter(
+                    x=bench_oos.index,
+                    y=cum_bench_oos,
+                    name=f"{benchmark_label} (OOS)",
+                    line=dict(color="#55A868"),
+                    showlegend=True,
+                ))
+
+        if has_benchmark_oos:
+            title = f"Cumulative Return: Current vs Proposed vs {benchmark_label} (OOS)"
+        else:
+            title = "Cumulative Return: Current vs Proposed (OOS)"
+
+        fig.update_layout(
+            title=title,
+            xaxis_title="Date",
+            yaxis_title="Growth of $1 (rebased at OOS start)",
+            legend=dict(orientation="h", y=1.1),
+            template="plotly_white",
+        )
+        return fig
 
     port_current_is = returns.values @ current_weights
     port_proposed_is = returns.values @ proposed_weights
@@ -267,72 +324,6 @@ def fig_cumulative_returns(
                 name=benchmark_label,
                 line=dict(color="#55A868"),
             ))
-
-    if eval_returns is not None and not eval_returns.empty:
-        port_current_oos = eval_returns.values @ current_weights
-        port_proposed_oos = eval_returns.values @ proposed_weights
-        # Chain OOS returns so the cumulative curve is continuous
-        cum_current_oos = _cum(port_current_oos, start_val=cum_current_is[-1])
-        cum_proposed_oos = _cum(port_proposed_oos, start_val=cum_proposed_is[-1])
-        idx_oos = eval_returns.index
-
-        fig.add_trace(go.Scatter(
-            x=idx_oos, y=cum_current_oos, name="Current (OOS)",
-            line=dict(color="#4C72B0", dash="dash"),
-            showlegend=True,
-        ))
-        fig.add_trace(go.Scatter(
-            x=idx_oos, y=cum_proposed_oos, name="Proposed (OOS)",
-            line=dict(color="#DD8452", dash="dash"),
-            showlegend=True,
-        ))
-
-        if benchmark_eval_returns is not None and not benchmark_eval_returns.empty:
-            bench_oos = benchmark_eval_returns.reindex(idx_oos).dropna()
-            if not bench_oos.empty:
-                bench_start = 1.0
-                if benchmark_returns is not None and not benchmark_returns.empty:
-                    bench_is = benchmark_returns.reindex(idx_is).dropna()
-                    if not bench_is.empty:
-                        bench_start = _cum(bench_is.values)[-1]
-                cum_bench_oos = _cum(bench_oos.values, start_val=bench_start)
-                fig.add_trace(go.Scatter(
-                    x=bench_oos.index,
-                    y=cum_bench_oos,
-                    name=f"{benchmark_label} (OOS)",
-                    line=dict(color="#55A868", dash="dash"),
-                    showlegend=True,
-                ))
-
-        # Vertical boundary line — use add_shape to avoid Plotly/Pandas
-        # datetime arithmetic incompatibility with add_vline
-        boundary_str = str(pd.Timestamp(idx_oos[0]).date())
-        fig.add_shape(
-            type="line",
-            xref="x",
-            yref="paper",
-            x0=boundary_str,
-            x1=boundary_str,
-            y0=0,
-            y1=1,
-            line=dict(color="grey", width=1.5, dash="dot"),
-        )
-        fig.add_annotation(
-            x=boundary_str,
-            yref="paper",
-            y=1.01,
-            text="OOS →",
-            showarrow=False,
-            font=dict(color="grey", size=11),
-            xanchor="left",
-        )
-        if has_benchmark:
-            title = (
-                f"Cumulative Return: Current vs Proposed vs {benchmark_label} "
-                "(solid = in-sample · dashed = OOS)"
-            )
-        else:
-            title = "Cumulative Return: Current vs Proposed (solid = in-sample · dashed = OOS)"
 
     fig.update_layout(
         title=title,

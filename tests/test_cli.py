@@ -58,12 +58,19 @@ def test_parser_defaults():
     assert args.max_weight == 1.0
     assert args.turnover is None
     assert args.max_increase is None
+    assert args.distance_penalty == 0.0
     assert args.objective == "max_sharpe"
     assert args.risk_free_rate == 0.0
     assert args.risk_free_source == "manual"
     assert args.risk_free_tenor == "3m"
     assert args.small_cap_threshold_b is None
     assert args.small_cap_max_weight == 0.05
+    assert args.mu_method == "shrinkage"
+    assert args.mu_shrinkage == 0.5
+    assert args.mu_ewm_span == 60
+    assert args.random_test_n == 0
+    assert args.random_test_size == 15
+    assert args.random_test_seed == 42
     assert args.benchmark == "^GSPC"
 
 
@@ -77,6 +84,12 @@ def test_parser_max_increase_arg():
     parser = _build_parser()
     args = parser.parse_args(["--holdings", "AAPL=1.0", "--max-increase", "0.05"])
     assert args.max_increase == 0.05
+
+
+def test_parser_distance_penalty_arg():
+    parser = _build_parser()
+    args = parser.parse_args(["--holdings", "AAPL=1.0", "--distance-penalty", "3.5"])
+    assert args.distance_penalty == 3.5
 
 
 def test_parser_small_cap_args():
@@ -127,3 +140,41 @@ def test_parser_risk_free_treasury_args():
     )
     assert args.risk_free_source == "treasury"
     assert args.risk_free_tenor == "10y"
+
+
+def test_parser_mu_args():
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--holdings",
+            "AAPL=1.0",
+            "--mu-method",
+            "ewma",
+            "--mu-ewm-span",
+            "90",
+            "--mu-shrinkage",
+            "0.3",
+        ]
+    )
+    assert args.mu_method == "ewma"
+    assert args.mu_ewm_span == 90
+    assert args.mu_shrinkage == 0.3
+
+
+def test_parser_random_test_args():
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--holdings",
+            "AAPL=1.0",
+            "--random-test-n",
+            "120",
+            "--random-test-size",
+            "12",
+            "--random-test-seed",
+            "7",
+        ]
+    )
+    assert args.random_test_n == 120
+    assert args.random_test_size == 12
+    assert args.random_test_seed == 7

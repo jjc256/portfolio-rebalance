@@ -14,6 +14,9 @@ portfolio-rebalance --csv sample_portfolio.csv --max-weight 0.25 --turnover 0.5
 # Keep speculative positions from scaling too quickly
 portfolio-rebalance --csv sample_portfolio.csv --max-increase 0.05
 
+# Softly discourage large weight moves from current holdings
+portfolio-rebalance --csv sample_portfolio.csv --distance-penalty 5.0
+
 # Explicit objective selection
 portfolio-rebalance --csv sample_portfolio.csv --objective min_variance
 
@@ -22,6 +25,12 @@ portfolio-rebalance --csv sample_portfolio.csv --risk-free-rate 0.03
 
 # Use latest 3-month U.S. Treasury yield for risk-free rate
 portfolio-rebalance --csv sample_portfolio.csv --risk-free-source treasury --risk-free-tenor 3m
+
+# Robust expected return estimation for Sharpe objective
+portfolio-rebalance --csv sample_portfolio.csv --mu-method shrinkage --mu-shrinkage 0.6
+
+# Robustness test: random S&P 500 portfolios using current settings
+portfolio-rebalance --csv sample_portfolio.csv --random-test-n 100 --random-test-size 15
 
 # Cap sub-10B market-cap names at 3 % each
 portfolio-rebalance --csv sample_portfolio.csv --small-cap-threshold-b 10 --small-cap-max-weight 0.03
@@ -112,6 +121,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--distance-penalty",
+        type=float,
+        default=0.0,
+        metavar="L",
+        help=(
+            "Soft penalty strength for moving away from current weights. "
+            "Adds L * ||w_new - w_old||^2 to the objective (default: 0.0)."
+        ),
+    )
+    parser.add_argument(
         "--small-cap-threshold-b",
         type=float,
         default=None,
@@ -135,6 +154,35 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=["sample", "ledoit_wolf"],
         default="sample",
         help="Covariance estimation method (default: sample).",
+    )
+    parser.add_argument(
+        "--mu-method",
+        choices=["sample", "ewma", "shrinkage"],
+        default="shrinkage",
+        help=(
+            "Expected-return estimator used by max_sharpe (default: shrinkage). "
+            "sample=plain mean, ewma=recently weighted mean, "
+            "shrinkage=mean shrinkage toward grand mean."
+        ),
+    )
+    parser.add_argument(
+        "--mu-shrinkage",
+        type=float,
+        default=0.5,
+        metavar="S",
+        help=(
+            "Shrinkage intensity in [0, 1] for --mu-method=shrinkage "
+            "(default: 0.5)."
+        ),
+    )
+    parser.add_argument(
+        "--mu-ewm-span",
+        type=int,
+        default=60,
+        metavar="N",
+        help=(
+            "EWMA span (trading days) for --mu-method=ewma (default: 60)."
+        ),
     )
     parser.add_argument(
         "--objective",
@@ -194,6 +242,34 @@ def _build_parser() -> argparse.ArgumentParser:
             "(default: ^GSPC, S&P 500 index). Use 'none' to disable."
         ),
     )
+    parser.add_argument(
+        "--random-test-n",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Run robustness test on N random S&P 500 portfolios using the same "
+            "optimization settings and report how often Sharpe improves "
+            "(default: 0 = disabled)."
+        ),
+    )
+    parser.add_argument(
+        "--random-test-size",
+        type=int,
+        default=15,
+        metavar="K",
+        help=(
+            "Number of stocks in each random S&P 500 portfolio for --random-test-n "
+            "(default: 15)."
+        ),
+    )
+    parser.add_argument(
+        "--random-test-seed",
+        type=int,
+        default=42,
+        metavar="SEED",
+        help="Random seed for reproducible random S&P 500 test portfolios.",
+    )
 
     # Output
     parser.add_argument(
@@ -231,6 +307,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_increase is not None and not 0.0 <= args.max_increase <= 1.0:
         print("ERROR: --max-increase must be between 0 and 1.", file=sys.stderr)
         return 1
+    if args.distance_penalty < 0.0:
+        print("ERROR: --distance-penalty must be non-negative.", file=sys.stderr)
+        return 1
     if args.small_cap_threshold_b is not None and args.small_cap_threshold_b <= 0.0:
         print("ERROR: --small-cap-threshold-b must be > 0.", file=sys.stderr)
         return 1
@@ -239,6 +318,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not -1.0 < args.risk_free_rate < 1.0:
         print("ERROR: --risk-free-rate must be in (-1, 1).", file=sys.stderr)
+        return 1
+    if not 0.0 <= args.mu_shrinkage <= 1.0:
+        print("ERROR: --mu-shrinkage must be between 0 and 1.", file=sys.stderr)
+        return 1
+    if args.mu_ewm_span <= 1:
+        print("ERROR: --mu-ewm-span must be > 1.", file=sys.stderr)
+        return 1
+    if args.random_test_n < 0:
+        print("ERROR: --random-test-n must be >= 0.", file=sys.stderr)
+        return 1
+    if args.random_test_size < 2:
+        print("ERROR: --random-test-size must be >= 2.", file=sys.stderr)
         return 1
 
     # ------------------------------------------------------------------
@@ -255,9 +346,9 @@ def main(argv: list[str] | None = None) -> int:
     from portfolio_rebalance.risk import (
         compute_returns,
         compute_covariance,
+        estimate_expected_returns,
         portfolio_volatility,
         split_returns,
-        TRADING_DAYS,
     )
     from portfolio_rebalance.optimizer import rebalance
     from portfolio_rebalance.reporting import weights_table, stats_summary
@@ -342,7 +433,13 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     cov = compute_covariance(est_returns, annualise=True, method=args.cov_method)
-    expected_returns = est_returns.mean() * TRADING_DAYS
+    expected_returns = estimate_expected_returns(
+        est_returns,
+        annualise=True,
+        method=args.mu_method,
+        shrinkage=args.mu_shrinkage,
+        ewm_span=args.mu_ewm_span,
+    )
 
     objective_label = (
         "Max Sharpe" if args.objective == "max_sharpe" else "Minimum Variance"
@@ -368,6 +465,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.objective == "max_sharpe":
         print(
             f"Objective: {objective_label} (risk-free rate={effective_risk_free_rate:.2%})"
+        )
+        print(
+            "Expected return estimator: "
+            f"{args.mu_method} "
+            f"(shrinkage={args.mu_shrinkage:.2f}, ewm-span={args.mu_ewm_span})"
         )
     else:
         print(f"Objective: {objective_label}")
@@ -446,6 +548,7 @@ def main(argv: list[str] | None = None) -> int:
             max_weights=per_asset_max,
             turnover_limit=args.turnover,
             max_increase=args.max_increase,
+            distance_penalty=args.distance_penalty,
             objective=args.objective,
             expected_returns=expected_returns,
             risk_free_rate=effective_risk_free_rate,
@@ -489,6 +592,56 @@ def main(argv: list[str] | None = None) -> int:
         f"\nVolatility change: {current_vol:.2%} → {proposed_vol:.2%} "
         f"({direction}{abs(vol_change):.2%})"
     )
+
+    if args.random_test_n > 0:
+        from portfolio_rebalance.validation import run_random_sp500_sharpe_test
+
+        print("\n" + "=" * 60)
+        print("RANDOM S&P 500 ROBUSTNESS TEST")
+        print("=" * 60)
+        print(
+            "Running "
+            f"{args.random_test_n} random portfolios (size={args.random_test_size}, "
+            f"seed={args.random_test_seed})..."
+        )
+
+        test_result = run_random_sp500_sharpe_test(
+            n_portfolios=args.random_test_n,
+            portfolio_size=args.random_test_size,
+            period=args.period,
+            require_full_history=args.full_history,
+            cov_method=args.cov_method,
+            objective=args.objective,
+            mu_method=args.mu_method,
+            mu_shrinkage=args.mu_shrinkage,
+            mu_ewm_span=args.mu_ewm_span,
+            max_weight=args.max_weight,
+            turnover_limit=args.turnover,
+            max_increase=args.max_increase,
+            distance_penalty=args.distance_penalty,
+            risk_free_rate=effective_risk_free_rate,
+            eval_frac=args.eval_frac,
+            small_cap_threshold_b=args.small_cap_threshold_b,
+            small_cap_max_weight=args.small_cap_max_weight,
+            seed=args.random_test_seed,
+        )
+
+        print(
+            f"Completed: {test_result.completed}/{test_result.attempted} "
+            f"({test_result.skipped} skipped)"
+        )
+        if test_result.completed == 0:
+            print("No valid random portfolios completed. Try shorter period or smaller size.")
+        else:
+            print(
+                f"Sharpe improved in: {test_result.improved}/{test_result.completed} "
+                f"({test_result.improvement_rate:.1%})"
+            )
+            print(
+                "Sharpe delta (proposed - current): "
+                f"mean={test_result.avg_sharpe_delta:+.3f}, "
+                f"median={test_result.median_sharpe_delta:+.3f}"
+            )
 
     return 0
 

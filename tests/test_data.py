@@ -15,6 +15,7 @@ from portfolio_rebalance.data import (
     load_portfolio_dict,
     load_data,
     download_market_caps,
+    download_sp500_tickers,
     download_treasury_risk_free_rate,
 )
 
@@ -177,6 +178,49 @@ def test_download_market_caps_dispatch(monkeypatch):
 def test_download_market_caps_unknown_backend_raises():
     with pytest.raises(NotImplementedError):
         download_market_caps(["AAPL"], backend="dummy")
+
+
+def test_download_sp500_tickers_dispatch(monkeypatch):
+    mocked = [f"T{i}" for i in range(500)]
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_sp500_tickers_wikipedia",
+        lambda timeout=20.0: mocked,
+    )
+    out = download_sp500_tickers()
+    assert out == mocked
+
+
+def test_download_sp500_tickers_unknown_source_raises():
+    with pytest.raises(NotImplementedError):
+        download_sp500_tickers(source="dummy")
+
+
+def test_download_sp500_tickers_fallback_when_wikipedia_fails(monkeypatch):
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_sp500_tickers_wikipedia",
+        lambda timeout=20.0: (_ for _ in ()).throw(ValueError("HTTP Error 403: Forbidden")),
+    )
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_sp500_tickers_csv_fallback",
+        lambda timeout=20.0: [f"T{i}" for i in range(500)],
+    )
+
+    out = download_sp500_tickers()
+    assert len(out) == 500
+
+
+def test_download_sp500_tickers_all_sources_fail(monkeypatch):
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_sp500_tickers_wikipedia",
+        lambda timeout=20.0: (_ for _ in ()).throw(ValueError("HTTP Error 403: Forbidden")),
+    )
+    monkeypatch.setattr(
+        "portfolio_rebalance.data._download_sp500_tickers_csv_fallback",
+        lambda timeout=20.0: (_ for _ in ()).throw(ValueError("HTTP Error 429: Too Many Requests")),
+    )
+
+    with pytest.raises(ValueError, match="Unable to download S&P 500 constituents"):
+        download_sp500_tickers()
 
 
 def test_download_treasury_risk_free_rate_latest(monkeypatch):

@@ -173,7 +173,7 @@ def test_fig_cumulative_returns():
 
 
 def test_fig_cumulative_returns_oos():
-    """OOS variant should produce a figure with 4 traces and a vertical line."""
+    """OOS variant should show only OOS traces rebased at the cutoff."""
     from portfolio_rebalance.risk import split_returns
 
     prices = _make_returns(n_days=500, n_assets=4)
@@ -182,9 +182,12 @@ def test_fig_cumulative_returns_oos():
     w = np.full(4, 0.25)
     fig = fig_cumulative_returns(est, w, w, eval_returns=oos)
     assert fig is not None
-    # Should have 4 scatter traces (2 in-sample + 2 OOS)
+    # Should have 2 scatter traces (current/proposed OOS only)
     scatter_traces = [t for t in fig.data if t.type == "scatter"]
-    assert len(scatter_traces) == 4
+    assert len(scatter_traces) == 2
+    # Both OOS lines should start from the same rebased value at cutoff
+    assert scatter_traces[0].y[0] == pytest.approx(1.0)
+    assert scatter_traces[1].y[0] == pytest.approx(1.0)
 
 
 def test_fig_cumulative_returns_with_benchmark():
@@ -218,4 +221,6 @@ def test_fig_cumulative_returns_oos_with_benchmark():
     )
     assert fig is not None
     scatter_traces = [t for t in fig.data if t.type == "scatter"]
-    assert len(scatter_traces) == 6
+    assert len(scatter_traces) == 3
+    for trace in scatter_traces:
+        assert trace.y[0] == pytest.approx(1.0)

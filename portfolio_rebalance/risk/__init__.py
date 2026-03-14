@@ -64,6 +64,57 @@ def compute_covariance(
     return cov
 
 
+def estimate_expected_returns(
+    returns: pd.DataFrame,
+    annualise: bool = True,
+    method: str = "shrinkage",
+    shrinkage: float = 0.5,
+    ewm_span: int = 60,
+) -> pd.Series:
+    """Estimate expected returns from historical daily returns.
+
+    Parameters
+    ----------
+    returns:
+        Daily returns DataFrame (rows = dates, columns = tickers).
+    annualise:
+        Multiply daily estimates by ``TRADING_DAYS`` when True.
+    method:
+        ``"sample"`` for plain sample mean.
+        ``"ewma"`` for exponentially weighted mean using ``ewm_span``.
+        ``"shrinkage"`` for linear shrinkage of sample means toward the
+        cross-sectional grand mean using ``shrinkage``.
+    shrinkage:
+        Shrinkage intensity in [0, 1] for ``method="shrinkage"``.
+        0 keeps sample means; 1 fully shrinks to the grand mean.
+    ewm_span:
+        Span for exponentially weighted mean when ``method="ewma"``.
+    """
+    if returns.empty:
+        raise ValueError("returns must not be empty.")
+
+    if method == "sample":
+        mu_daily = returns.mean()
+    elif method == "ewma":
+        if ewm_span <= 1:
+            raise ValueError(f"ewm_span must be > 1, got {ewm_span}.")
+        mu_daily = returns.ewm(span=ewm_span, adjust=False).mean().iloc[-1]
+    elif method == "shrinkage":
+        if not 0.0 <= shrinkage <= 1.0:
+            raise ValueError(f"shrinkage must be in [0, 1], got {shrinkage}.")
+        sample_mu = returns.mean()
+        grand_mean = float(sample_mu.mean())
+        mu_daily = (1.0 - float(shrinkage)) * sample_mu + float(shrinkage) * grand_mean
+    else:
+        raise ValueError(
+            f"Unknown expected-return method '{method}'. Use 'sample', 'ewma', or 'shrinkage'."
+        )
+
+    if annualise:
+        mu_daily = mu_daily * TRADING_DAYS
+    return mu_daily
+
+
 def portfolio_volatility(weights: np.ndarray, cov: pd.DataFrame) -> float:
     """Return annualised portfolio volatility (std dev) given weights and covariance."""
     w = np.asarray(weights, dtype=float)

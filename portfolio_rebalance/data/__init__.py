@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,17 @@ TREASURY_TENOR_COLUMNS: dict[str, str] = {
     "5y": "5 Yr",
     "10y": "10 Yr",
     "30y": "30 Yr",
+}
+
+SP500_WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+SP500_CSV_FALLBACK_URL = "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv"
+DEFAULT_HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 # ---------------------------------------------------------------------------
@@ -185,6 +196,92 @@ def download_treasury_risk_free_rate(
     )
 
 
+def download_sp500_tickers(
+    source: str = "wikipedia",
+    timeout: float = 20.0,
+) -> list[str]:
+    """Return the current S&P 500 ticker universe.
+
+    Parameters
+    ----------
+    source:
+        Data source for the constituent list. Currently only ``"wikipedia"``
+        is implemented.
+    timeout:
+        HTTP timeout in seconds for online sources.
+    """
+    source_norm = source.strip().lower()
+    if source_norm == "wikipedia":
+        errors: list[str] = []
+        for label, loader in [
+            ("wikipedia", _download_sp500_tickers_wikipedia),
+            ("csv-fallback", _download_sp500_tickers_csv_fallback),
+        ]:
+            try:
+                tickers = loader(timeout=timeout)
+                if len(tickers) >= 400:
+                    return tickers
+                errors.append(f"{label}: unexpectedly small universe ({len(tickers)})")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{label}: {exc}")
+
+        detail = "; ".join(errors) if errors else "no response"
+        raise ValueError(
+            "Unable to download S&P 500 constituents from online sources "
+            f"({detail})."
+        )
+    raise NotImplementedError(f"S&P 500 source '{source}' is not implemented.")
+
+
+def _download_sp500_tickers_wikipedia(timeout: float = 20.0) -> list[str]:
+    """Download S&P 500 symbols from the Wikipedia constituents table."""
+    payload = _download_text_url(SP500_WIKI_URL, timeout=timeout)
+
+    tables = pd.read_html(io.StringIO(payload))
+    if not tables:
+        raise ValueError("No tables found on the S&P 500 Wikipedia page.")
+
+    df = tables[0]
+    if "Symbol" not in df.columns:
+        raise ValueError("S&P 500 constituents table missing 'Symbol' column.")
+
+    # yfinance expects BRK.B/BF.B-style symbols as BRK-B/BF-B.
+    tickers = (
+        df["Symbol"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace(".", "-", regex=False)
+    )
+    tickers = [t for t in tickers.tolist() if t]
+    unique = list(dict.fromkeys(tickers))
+    return unique
+
+
+def _download_sp500_tickers_csv_fallback(timeout: float = 20.0) -> list[str]:
+    """Fallback S&P 500 universe download from a public CSV mirror."""
+    payload = _download_text_url(SP500_CSV_FALLBACK_URL, timeout=timeout)
+    df = pd.read_csv(io.StringIO(payload))
+    if "Symbol" not in df.columns:
+        raise ValueError("S&P 500 fallback CSV missing 'Symbol' column.")
+
+    tickers = (
+        df["Symbol"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace(".", "-", regex=False)
+    )
+    return [t for t in tickers.tolist() if t]
+
+
+def _download_text_url(url: str, timeout: float = 20.0) -> str:
+    """Download UTF-8 text payload with browser-like headers."""
+    req = Request(url, headers=DEFAULT_HTTP_HEADERS)
+    with urlopen(req, timeout=timeout) as response:  # noqa: S310
+        return response.read().decode("utf-8")
+
+
 def _download_treasury_yield_curve_csv(year: int, timeout: float = 20.0) -> pd.DataFrame:
     """Download a year of Treasury daily yield-curve data as a DataFrame."""
     url = (
@@ -193,8 +290,7 @@ def _download_treasury_yield_curve_csv(year: int, timeout: float = 20.0) -> pd.D
         "?type=daily_treasury_yield_curve"
         f"&field_tdr_date_value={year}&page&_format=csv"
     )
-    with urlopen(url, timeout=timeout) as response:  # noqa: S310
-        payload = response.read().decode("utf-8")
+    payload = _download_text_url(url, timeout=timeout)
     return pd.read_csv(io.StringIO(payload), engine="python")
 
 
